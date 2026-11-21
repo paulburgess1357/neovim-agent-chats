@@ -1,0 +1,203 @@
+---@meta
+-- Shared shapes. This file holds annotations only and is never required.
+
+---@alias agent_chats.Turn
+---| "working"  The agent is mid-turn.
+---| "waiting"  The agent is blocked on the user (a permission prompt, a question).
+---| "done"     The turn finished; it is the user's move.
+---| "aborted"  The turn was interrupted; it is the user's move.
+---| "unknown"  Nothing conclusive in the transcript.
+
+---@alias agent_chats.Status "attention"|"working"|"done"|"idle"|"ended"
+
+--- One chat as found on disk. Cheap to produce: no file is opened for it.
+---@class agent_chats.Entry
+---@field id string            The agent's own id for the chat.
+---@field path string?         Transcript file, for agents that keep one per chat.
+---@field mtime number         Seconds. With `size`, tells whether to parse again.
+---@field size integer
+---@field data table?          Anything the provider wants handed back to `parse`.
+---@field rev any?             Set by the index from the provider's `rev(id)`.
+
+--- What a provider reads out of a chat. A missing field means "unknown".
+---@class agent_chats.Parsed
+---@field title string?        The agent's own title for the chat.
+---@field first_prompt string?
+---@field last_prompt string?
+---@field last_reply string?
+---@field activity string?     One line on the tool call that is outstanding, if any.
+---@field pending_tool boolean? A tool call has no result yet (running, or awaiting approval).
+---@field asking boolean?      The agent explicitly asked the user something.
+---@field cwd string?          Folder the chat was started in.
+---@field branch string?       Git branch the agent recorded.
+---@field model string?
+---@field origin string?       Where it ran: "cli", "vscode", "exec", ...
+---@field created number?      Epoch seconds.
+---@field updated number?      Epoch seconds of the last activity in the conversation.
+---@field turn agent_chats.Turn
+---@field turn_at number?      Epoch seconds the turn reached this state.
+---@field turn_began number?   Epoch seconds the current turn started, when the reader saw its start.
+---@field parent_id string?    Id of the chat that spawned this one.
+
+--- What is known about a chat's running process.
+---@class agent_chats.Live
+---@field pid integer?
+---@field turn agent_chats.Turn?  Exact turn state, when the agent reports one.
+---@field name string?            The agent's session name.
+---@field name_explicit boolean?  The user chose that name.
+---@field waiting_for string?     What the agent says it is waiting for.
+---@field cwd string?
+---@field started number?         Epoch seconds.
+---@field turn_at number?         Epoch seconds the reported state began. Without it the report counts as made now.
+---@field kind string?            "interactive", "bg", ...
+
+--- What an agent's hooks add up to for one chat (see events.lua).
+---@class agent_chats.Reported
+---@field turn agent_chats.Turn?  The turn state the events add up to.
+---@field at number               Epoch seconds of the last event that says so.
+---@field waiting_for string?     What the oldest open request is about.
+---@field pid integer?            The agent's process, as last reported.
+---@field pid_at number?
+---@field ended boolean?          The session said it closed.
+---@field path string?            The transcript file the agent named.
+---@field cwd string?
+---@field count integer           Events read so far.
+
+--- One line of a hook log, as handed to a rule in `hooks.events`.
+---@class agent_chats.HookEvent
+---@field t number       Epoch seconds.
+---@field e string       The event's name.
+---@field type string?   What kind (a notification type, a session status).
+---@field tool string?   The tool a request is about.
+---@field agent string?  The subagent the event belongs to.
+---@field req string?    The id of a request, for agents that give them one.
+---@field src string?    What started the session ("startup", "resume", ...).
+---@field reason string? Why the session ended.
+---@field pid integer?   The agent's process.
+
+--- What a hook event means for the chat's turn. One of:
+---   "working"   a turn began
+---   "active"    the turn is running
+---   "waiting"   the agent asked the user something (a permission, a question)
+---   "resolved"  a request was answered, or a tool finished
+---   "done"      the turn finished
+---   "idle"      the session is idle: done, unless the turn was interrupted
+---   "aborted"   the turn was interrupted
+---   "start"     the session started or resumed: forget what was known
+---   "ended"     the session closed
+---@alias agent_chats.Signal "working"|"active"|"waiting"|"resolved"|"done"|"idle"|"aborted"|"start"|"ended"
+
+--- How an agent reports its own status through hooks, and how those hooks
+--- are installed. Everything is optional but `events`.
+---@class agent_chats.HookSpec
+--- Event name -> signal, or a function that looks at the event and returns
+--- the signal (nil: ignore it) and, for "waiting", what is waited for.
+---@field events table<string, agent_chats.Signal|fun(ev: agent_chats.HookEvent): agent_chats.Signal?, string?>
+--- Names the agent's process goes by, to tell whether the process a hook ran
+--- under is still that agent. Default: the provider's name.
+---@field process table<string, boolean>?
+--- How `:Chats hooks install` sets the hooks up (see hooks.lua):
+---   { kind = "json", path, events, timeout?, timeouts?, note? }
+---       a JSON file listing a command per event, as Claude Code has. The
+---       command runs scripts/agent-chats-hook.sh with the provider's name.
+---   { kind = "file", path, source, note? }
+---       a file of the agent's own, shipped under scripts/, put at `path`.
+---@field config (fun(): agent_chats.HookConfig)?
+
+--- A chat as the rest of the plugin sees it: Parsed + Live + bookkeeping.
+---@class agent_chats.Chat: agent_chats.Parsed
+---@field key string           `<provider>:<id>`; `<provider>:<id>/<sub>` for a subagent.
+---@field provider string
+---@field id string
+---@field path string?
+---@field mtime number
+---@field size integer
+---@field data table?          The entry's provider-private extras.
+---@field live boolean?        true: a process has it open. false: none does. nil: cannot tell.
+---@field pid integer?
+---@field exact boolean?       `turn` came from the agent itself, not from the transcript.
+---@field source string?       Who said it: "hooks", "registry", "query" or "transcript".
+---@field answered boolean?    Hooks reported a request and you typed into the chat's terminal since.
+---@field done_at number?      Epoch seconds a hook reported the turn finished.
+---@field said_at number?      When the agent itself last reported its turn, if it said when.
+---@field waiting_for string?
+---@field name string?
+---@field name_explicit boolean?
+---@field kind string?
+---@field status agent_chats.Status
+---@field inferred boolean?    `status` is "attention" by the quiet-tool-call guess.
+---@field through string?      `status` is "attention" because this chat, which it started, is waiting.
+---@field rev any?             The provider's `rev(id)` when the chat was parsed.
+---@field parent string?       Key of the parent chat.
+---@field subagent boolean?
+---@field agent_type string?   Subagent flavour ("Explore", ...).
+---@field stub boolean?        A running session with no transcript yet.
+---@field unstarted boolean?   A terminal of this Neovim whose agent has started no session yet (also a stub).
+---@field term integer?        Buffer of the terminal in this Neovim that hosts it.
+
+--- One step of a conversation, normalised across agents.
+---@class agent_chats.Message
+---@field role "user"|"assistant"|"thinking"|"tool"|"tool_result"|"system"
+---@field text string?         Markdown for user / assistant / thinking / system; output for tool_result.
+---@field name string?         Tool name (role "tool").
+---@field summary string?      One line on the tool call (role "tool").
+---@field input string?        The tool call's input, ready to show (role "tool").
+---@field lang string?         Fence language for `input` / `text` of tool messages.
+---@field error boolean?       The tool reported failure (role "tool_result").
+---@field id string?           Links a tool call to its result.
+---@field time number?         Epoch seconds.
+
+---@class agent_chats.Provider
+---@field name string                 Short id: "claude".
+---@field label string                Display name: "Claude".
+---@field exact (boolean|fun(): boolean)?  `live()` reports the turn state itself (a function when that depends on the machine).
+---@field preassign_id boolean?       `new_cmd` honours `opts.id`, so a new chat's id is known up front.
+---@field home fun(): string          Where the agent keeps its data.
+---@field available fun(): boolean    Whether there is any data to read.
+---@field discover fun(): agent_chats.Entry[]
+---@field parse fun(entry: agent_chats.Entry, prev: agent_chats.Chat?): agent_chats.Parsed?
+--- What a chat is doing right now can be learned three ways. Supply any of
+--- them; the index combines what it gets (store.lua says how).
+---
+--- 1. `hooks`: events the agent pushes through its own hook system. The most
+---    direct, and the only one that needs installing.
+---@field hooks agent_chats.HookSpec?
+--- 2. `query`: an official interface that can be asked (a CLI, an API). It
+---    may run a process, so it is called at most every `query_interval` ms
+---    (default 10000) and its last answer is reused in between. Returns
+---    id -> live info, or nil when it has nothing to say.
+---@field query (fun(chats: table<string, agent_chats.Chat>): table<string, agent_chats.Live>?)?
+---@field query_interval integer?
+--- 3. `live`: files and processes, looked at on every refresh, so it must be
+---    cheap. Returns id -> live info for the chats with a running process,
+---    or nil when it cannot tell. `reported` holds what hooks said about the
+---    chats already known (a hook names the process its session runs under).
+---@field live (fun(chats: table<string, agent_chats.Chat>, reported: table<string, agent_chats.Reported>): table<string, agent_chats.Live>?)?
+---@field locate (fun(id: string, live: agent_chats.Live): agent_chats.Entry?)?
+--- A value that changes when something about a chat changed outside its
+--- transcript (a title kept in a separate index). The chat is parsed again
+--- when it differs from last time.
+---@field rev (fun(id: string): any)?
+--- Extra lines for :checkhealth: `{ { level = "ok"|"info"|"warn", text, advice? } }`.
+---@field check (fun(): { level: string, text: string, advice: string[]? }[])?
+--- `messages` returns the conversation after `opts.cursor` plus a new cursor, so a
+--- viewer can follow a chat as it grows. A provider that cannot read incrementally
+--- returns the whole conversation and a nil cursor. A third value of true says
+--- "this is everything from the top again" (the transcript was rewritten and the
+--- cursor no longer fits). A conversation that cannot be read is an error, not an
+--- empty list: a viewer shows an empty list as "nothing has been said".
+---@field messages fun(chat: agent_chats.Chat, opts: { cursor: any? }?): agent_chats.Message[], any, boolean?
+---@field subagents (fun(chat: agent_chats.Chat): agent_chats.Chat[])?
+--- `grep` narrows a full-text search for agents with no transcript file per chat:
+--- ids of the chats whose stored text may contain `query` (nil: cannot tell, scan all).
+---@field grep (fun(query: string): table<string, boolean>?)?
+---@field resume_cmd fun(chat: agent_chats.Chat): string[]
+---@field new_cmd fun(opts: { prompt: string?, id: string? }): string[]
+---@field fork_cmd (fun(chat: agent_chats.Chat): string[])?
+---@field headless_cmd (fun(chat: agent_chats.Chat, prompt: string): string[])?
+---@field resume_prompt_cmd (fun(chat: agent_chats.Chat, prompt: string): string[])?
+
+---@class agent_chats.Hit
+---@field index integer        Position of the message in `messages()`.
+---@field role string
+---@field excerpt string
