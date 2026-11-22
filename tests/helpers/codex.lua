@@ -290,6 +290,9 @@ function M.home(extra)
     },
     watch = { enabled = false },
     notify = { enabled = false },
+    -- The introduction is for a first look at the board, not for a test of
+    -- what the pane shows.
+    board = { intro = false },
     hooks = { dir = root .. '/events', script = root .. '/share/agent-chats-hook.sh' },
     state_file = root .. '/state.json',
     cache_file = false,

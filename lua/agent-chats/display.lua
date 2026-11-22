@@ -21,7 +21,7 @@ function M.title(chat, max)
   end
   t = t or chat.title
   if not t or t == '' then
-    t = chat.first_prompt or chat.last_prompt
+    t = text.first_line(chat.first_prompt) or text.first_line(chat.last_prompt)
   end
   if not t or t == '' then
     t = chat.name
@@ -69,13 +69,14 @@ end
 -- Where a running chat's status comes from, in a few words.
 local SOURCES = {
   hooks = 'its hooks',
-  registry = 'its session registry',
+  registry = "the agent's own list of running sessions",
   query = 'the agent itself',
-  transcript = 'the transcript',
+  transcript = 'its transcript file',
 }
 
---- `its hooks`, `its session registry`, `the transcript`: who said what the
---- chat is doing. nil for a chat that is not running (nothing to be said).
+--- `its hooks`, `the agent's own list of running sessions`, `its transcript
+--- file`: who said what the chat is doing. nil for a chat that is not
+--- running (nothing to be said).
 ---@return string?
 function M.source(chat)
   if not chat.live or chat.subagent or chat.stub then
@@ -99,15 +100,24 @@ function M.waiting(chat, get)
       out[#out + 1] = s
     end
   end
+  --- What it is doing, unless what it waits for has said that already
+  --- ("permission to run: make test", then "Bash: make test").
+  local function doing(c)
+    local what = type(c.activity) == 'string' and c.activity:match('^[%w_%-]+: (.+)$') or nil
+    if what and type(c.waiting_for) == 'string' and c.waiting_for:find(what, 1, true) then
+      return
+    end
+    push(c.activity)
+  end
   local child = chat.through and get and get(chat.through) or nil
   if child then
     push('A chat it started: ' .. M.title(child, 80))
     push(child.waiting_for)
-    push(child.activity)
+    doing(child)
     return out
   end
   push(chat.waiting_for)
-  push(chat.activity)
+  doing(chat)
   return out
 end
 

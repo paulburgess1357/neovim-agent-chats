@@ -2,7 +2,14 @@
 
 local M = {}
 
+-- A question that no test answers would wait for a key that never comes,
+-- and the whole run with it: it fails the test that asked instead.
+local function unanswered(_, opts)
+  error(('a question was asked and not answered: %s'):format(tostring(opts and opts.prompt)), 0)
+end
+
 function M.reset()
+  vim.ui.select, vim.ui.input = unanswered, unanswered
   for _, name in ipairs({ 'store', 'state', 'term', 'notify', 'queue', 'events', 'hooks' }) do
     local mod = package.loaded['agent-chats.' .. name]
     if mod and mod.reset then
@@ -12,6 +19,9 @@ function M.reset()
   local board = package.loaded['agent-chats.ui.board']
   if board and board.close then
     pcall(board.close)
+    -- The grouping is kept from one opening to the next while Neovim runs:
+    -- not from one test to the next.
+    board._state.group_by = nil
   end
   -- Terminals first, each job waited for (see `fake.cleanup` for why a
   -- terminal's buffer must not simply be deleted under it).

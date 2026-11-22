@@ -50,8 +50,16 @@ function M.read(cwd)
   info.root = lines[1]
   local common = lines[2]
   if common then
-    -- `<repo>/.git` for a normal checkout; a bare repository is its own root.
-    info.repo = fs.basename(common) == '.git' and vim.fs.dirname(common) or common
+    -- `<repo>/.git` for a normal checkout; a bare repository is its own
+    -- root; a submodule keeps its git folder inside the project it is part
+    -- of (`<super>/.git/modules/<name>`), and its checkout is its root.
+    if fs.basename(common) == '.git' then
+      info.repo = vim.fs.dirname(common)
+    elseif common:find('/.git/modules/', 1, true) and info.root then
+      info.repo = info.root
+    else
+      info.repo = common
+    end
     info.worktree = info.root ~= nil and info.repo ~= info.root
   end
   local st = git(cwd, { 'status', '--porcelain=v2', '--branch' })

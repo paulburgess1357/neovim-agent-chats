@@ -58,6 +58,11 @@ setmetatable(_G, {
   end,
 })
 
+-- Processes as well: an agent you have running right now is found by its
+-- process, and would turn up as a chat in the middle of a test. Only what
+-- this run starts itself is seen.
+require('agent-chats.util.proc')._scope = vim.uv.os_getpid()
+
 local T = require('helpers.harness')
 -- Specs call these as globals, the way busted-style suites read.
 for _, name in ipairs({ 'describe', 'it', 'before_each', 'after_each' }) do

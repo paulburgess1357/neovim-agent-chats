@@ -39,7 +39,7 @@ local function float(lines, opts)
   end
   local width = 40
   for _, l in ipairs(lines) do
-    width = math.max(width, vim.fn.strdisplaywidth(l) + 2)
+    width = math.max(width, vim.api.nvim_strwidth(l) + 2)
   end
   width = math.max(20, math.min(width, vim.o.columns - 6))
   local height = math.max(3, math.min(#lines, vim.o.lines - 8))
@@ -270,25 +270,35 @@ local MARKS = {
 }
 
 --- One line per agent on whether its hooks are installed.
+---@param names string[]?  Only these agents; every one in use when none is named.
 ---@return string[] lines, agent_chats.HookStatus[] statuses
-function M.report()
+function M.report(names)
+  local only
+  if names and #names > 0 then
+    only = {}
+    for _, name in ipairs(names) do
+      only[name] = true
+    end
+  end
   local statuses = {}
   for _, p in ipairs(hooks.candidates()) do
-    statuses[#statuses + 1] = hooks.status(p.name)
+    if not only or only[p.name] then
+      statuses[#statuses + 1] = hooks.status(p.name)
+    end
   end
   local wl, wd = 0, 0
   for _, st in ipairs(statuses) do
-    wl = math.max(wl, vim.fn.strdisplaywidth(st.label))
-    wd = math.max(wd, vim.fn.strdisplaywidth(st.detail))
+    wl = math.max(wl, vim.api.nvim_strwidth(st.label))
+    wd = math.max(wd, vim.api.nvim_strwidth(st.detail))
   end
   local lines = {}
   for _, st in ipairs(statuses) do
     lines[#lines + 1] = ('  %s %s%s  %s%s  %s'):format(
       MARKS[st.state][1],
       st.label,
-      string.rep(' ', wl - vim.fn.strdisplaywidth(st.label)),
+      string.rep(' ', wl - vim.api.nvim_strwidth(st.label)),
       st.detail,
-      string.rep(' ', wd - vim.fn.strdisplaywidth(st.detail)),
+      string.rep(' ', wd - vim.api.nvim_strwidth(st.detail)),
       st.path and fs.tilde(st.path) or ''
     )
   end

@@ -10,6 +10,21 @@ local M = {}
 ---@param name string Provider name.
 ---@param ... string|string[]|nil
 ---@return string[]
+--- A prompt as an argument on an agent's command line. Two things would
+--- make the program read it as something else: a leading dash (an option),
+--- and a single word that names one of its commands (`codex logout`,
+--- `claude update`, `qwen mcp`: seen in each program's own help). A space
+--- in front changes nothing of what the agent is asked, and makes the
+--- argument plain text to the program.
+---@param prompt string
+---@return string
+function M.arg(prompt)
+  if prompt:sub(1, 1) == '-' or not prompt:find('%s') then
+    return ' ' .. prompt
+  end
+  return prompt
+end
+
 function M.cmd(name, ...)
   local out = vim.deepcopy(config.provider(name).cmd)
   for i = 1, select('#', ...) do

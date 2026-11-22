@@ -1,10 +1,15 @@
 -- The five states a chat can be in on the board, and the rule that picks one.
 --
---   attention  the agent is blocked on you (a permission prompt, a question)
---   working    the agent is mid-turn
---   done       the turn finished and you have not looked at it since
---   idle       the turn finished, you have seen it, the agent is still open
---   ended      no process has the chat open; it can be resumed
+--   attention  "Needs you": the agent is blocked on you (a permission prompt,
+--              a question)
+--   working    "Working": the agent is mid-turn
+--   done       "Unread": the turn finished and you have not looked at it since
+--   idle       "Idle": the turn finished, you have seen it, the agent is still
+--              open
+--   ended      "Ended": no process has the chat open; it can be resumed
+--
+-- The names on the left are what the code and the API call them; the words
+-- in quotes are what the board says.
 
 local M = {}
 
@@ -19,7 +24,7 @@ end
 M.labels = {
   attention = 'Needs you',
   working = 'Working',
-  done = 'Done, unread',
+  done = 'Unread',
   idle = 'Idle',
   ended = 'Ended',
 }
@@ -28,9 +33,28 @@ M.labels = {
 M.short = {
   attention = 'needs you',
   working = 'working',
-  done = 'done',
+  done = 'unread',
   idle = 'idle',
   ended = 'ended',
+}
+
+-- What each one means, in a few words: shown beside its heading on the
+-- board, so that no table is needed to tell "Idle" from "Ended".
+M.about = {
+  attention = 'waiting for your answer',
+  working = 'in the middle of a turn',
+  done = 'finished since you last looked',
+  idle = 'open, nothing new',
+  ended = 'not open, can be resumed',
+}
+
+-- The same in fewer cells, for a narrow list.
+M.about_short = {
+  attention = 'waits for your answer',
+  working = 'mid-turn',
+  done = 'finished, not yet read',
+  idle = 'open, nothing new',
+  ended = 'not open, resumable',
 }
 
 M.hl = {

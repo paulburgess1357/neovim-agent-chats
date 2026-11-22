@@ -632,7 +632,13 @@ local function convert(r, out, sidechain)
     if kind == 'interrupt' then
       out[#out + 1] = { role = 'system', text = 'Interrupted by user.', time = ts }
     elseif s then
-      out[#out + 1] = { role = kind == 'system' and 'system' or 'user', text = s, time = ts }
+      out[#out + 1] = {
+        role = kind == 'system' and 'system' or 'user',
+        text = s,
+        time = ts,
+        -- `/exit`, `/model`: typed, but to the agent's program, not said to it.
+        command = kind == 'command' or nil,
+      }
     end
   elseif t == 'assistant' then
     local msg = r.message or {}
@@ -703,10 +709,9 @@ end
 -- Commands
 -----------------------------------------------------------------------------
 
--- A prompt that starts with a dash would be read as an option.
-local function arg(prompt)
-  return prompt:sub(1, 1) == '-' and (' ' .. prompt) or prompt
-end
+-- A prompt that the program could take for an option or a command of its
+-- own is kept from that (see `common.arg`).
+local arg = common.arg
 
 function M.resume_cmd(chat)
   return common.cmd('claude', '--resume', chat.id)
@@ -721,10 +726,6 @@ function M.new_cmd(opts)
     args[#args + 1] = arg(opts.prompt)
   end
   return common.cmd('claude', args)
-end
-
-function M.fork_cmd(chat)
-  return common.cmd('claude', '--resume', chat.id, '--fork-session')
 end
 
 function M.headless_cmd(chat, prompt)

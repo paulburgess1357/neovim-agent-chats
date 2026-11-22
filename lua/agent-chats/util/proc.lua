@@ -13,6 +13,24 @@ local M = {}
 
 M.has_procfs = uv.os_uname().sysname == 'Linux' and fs.is_dir('/proc/self')
 
+-- A process id, or nil. When set, only that process and what runs under it
+-- are seen when processes are listed. The tests set it to themselves, so
+-- that agents really running on the machine never turn up in one.
+M._scope = nil
+
+--- Whether `pid` is `scope` or runs under it, going by `parents` (pid ->
+--- parent pid).
+local function under(pid, parents, scope)
+  local hops = 0
+  while pid and pid > 1 and hops < 64 do
+    if pid == scope then
+      return true
+    end
+    pid, hops = parents[pid], hops + 1
+  end
+  return false
+end
+
 --- Whether a process with this pid exists.
 ---@param pid integer?
 function M.alive(pid)
@@ -42,6 +60,46 @@ function M.stat(pid)
   local f = vim.split(rest, ' ', { plain = true })
   -- `rest` starts at field 3 (state): ppid is field 4, starttime field 22.
   return { comm = comm, ppid = tonumber(f[2]) or 0, start = tonumber(f[20]) or 0 }
+end
+
+--- Whether process `pid` is what its terminal is reading from: running,
+--- and in the terminal's foreground job. false for one that is stopped
+--- (Ctrl-Z) or runs in the background of a shell; nil when it cannot be
+--- told.
+---@return boolean?
+function M.foreground(pid)
+  if M.has_procfs then
+    local raw = fs.read_small('/proc/' .. pid .. '/stat', 1024)
+    local rest = raw and raw:match('^%d+ %(.*%) (.*)$')
+    if not rest then
+      return nil
+    end
+    -- `rest` starts at field 3: state, ppid, pgrp, session, tty_nr, tpgid.
+    local f = vim.split(rest, ' ', { plain = true })
+    local state, pgrp, tpgid = f[1], tonumber(f[3]), tonumber(f[6])
+    if state == 'T' or state == 't' then
+      return false
+    end
+    if not pgrp or not tpgid or tpgid <= 0 then
+      return nil
+    end
+    return pgrp == tpgid
+  end
+  if vim.fn.executable('ps') ~= 1 then
+    return nil
+  end
+  local ok, res = pcall(function()
+    return vim.system({ 'ps', '-o', 'stat=', '-p', tostring(pid) }, { text = true }):wait(1000)
+  end)
+  local stat = ok and res and res.code == 0 and vim.trim(res.stdout or '') or ''
+  if stat == '' then
+    return nil
+  end
+  -- `T`: stopped. `+`: in the foreground process group of its terminal.
+  if stat:find('T', 1, true) then
+    return false
+  end
+  return stat:find('+', 1, true) ~= nil
 end
 
 --- Seconds in `ps -o etime=` output: `[[dd-]hh:]mm:ss`.
@@ -84,6 +142,18 @@ local function processes()
           { ppid = tonumber(ppid), args = args, born = elapsed and (now - elapsed) or nil }
       end
     end
+  end
+  if M._scope then
+    local parents, kept = {}, {}
+    for pid, row in pairs(rows) do
+      parents[pid] = row.ppid
+    end
+    for pid, row in pairs(rows) do
+      if under(pid, parents, M._scope) then
+        kept[pid] = row
+      end
+    end
+    rows = kept
   end
   snapshot = { at = uv.now(), rows = rows }
   return rows
@@ -222,6 +292,15 @@ local function table_of_processes()
       end
       async.tick()
     end
+  end
+  if M._scope then
+    local parents = {}
+    for _, row in ipairs(rows) do
+      parents[row.pid] = row.ppid
+    end
+    rows = vim.tbl_filter(function(row)
+      return under(row.pid, parents, M._scope)
+    end, rows)
   end
   proc_rows = rows
   return rows

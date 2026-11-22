@@ -6,7 +6,7 @@ local function provider()
 end
 
 describe('opencode commands', function()
-  it('builds resume, new, fork and headless command lines', function()
+  it('builds resume, new and headless command lines', function()
     require('agent-chats.config').setup({
       providers = {
         opencode = { cmd = { 'opencode', '--pure' }, headless_args = { '--agent', 'build' } },
@@ -20,7 +20,6 @@ describe('opencode commands', function()
       { 'opencode', '--pure', '--prompt', 'do it' },
       provider().new_cmd({ id = 'x', prompt = 'do it' })
     )
-    eq({ 'opencode', '--pure', '-s', 'ses_1', '--fork' }, provider().fork_cmd(chat))
     eq(
       { 'opencode', '--pure', 'run', '-s', 'ses_1', '--agent', 'build', 'next step' },
       provider().headless_cmd(chat, 'next step')

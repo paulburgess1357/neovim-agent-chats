@@ -15,5 +15,7 @@ lint:
 	@if command -v shellcheck >/dev/null 2>&1; then shellcheck -s sh scripts/agent-chats-hook.sh && echo 'shellcheck: ok'; fi
 	@if command -v node >/dev/null 2>&1; then node --check scripts/opencode-agent-chats.js && echo 'node --check: ok'; fi
 
+# Twice: one pass of stylua does not always leave what a second would.
 format:
+	stylua lua plugin tests
 	stylua lua plugin tests

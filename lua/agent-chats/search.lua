@@ -1,10 +1,13 @@
--- Full-text search across conversations.
+-- Reading the conversations for a text.
 --
--- The board's filter only sees what the index holds (titles, folders, the
--- latest exchange). This reads the conversations themselves: every prompt
--- and reply of every chat, and tool calls too when `search.tools` is on.
--- `rg`, when installed, narrows the files worth reading first; without it
--- the search still works, just slower.
+-- A search on the board narrows the rows at once from what the index holds
+-- (names, folders, the first and the latest exchange). This is its other
+-- half: it reads the conversations themselves, every prompt and reply of
+-- every chat, and the line each tool call has there ("Bash · make test"):
+-- what a conversation shows when it is read is what a search finds. What
+-- a call was given and what it gave back is read as well when
+-- `search.tools` is on. `rg`, when installed, narrows the files worth
+-- reading first; without it the search still works, just slower.
 
 local async = require('agent-chats.util.async')
 local config = require('agent-chats.config')
@@ -38,11 +41,17 @@ function M.scan(messages, query, opts)
   for i, m in ipairs(messages) do
     local searchable = m.role == 'user'
       or m.role == 'assistant'
-      or (opts.tools and (m.role == 'tool' or m.role == 'tool_result'))
+      or m.role == 'tool'
+      or (opts.tools and m.role == 'tool_result')
     if searchable then
       local body = m.text
       if m.role == 'tool' then
-        body = (m.name or '') .. ' ' .. (m.summary or '') .. '\n' .. (m.input or '')
+        -- Its line as the conversation shows it; with `search.tools`, what
+        -- it was given too.
+        body = (m.name or 'tool') .. ' · ' .. (m.summary or '')
+        if opts.tools then
+          body = body .. '\n' .. (m.input or '')
+        end
       end
       local s, e = match(body)
       if s then

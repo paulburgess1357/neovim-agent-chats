@@ -6,6 +6,7 @@
 local uv = vim.uv
 local config = require('agent-chats.config')
 local fs = require('agent-chats.util.fs')
+local proc = require('agent-chats.util.proc')
 local time = require('agent-chats.util.time')
 
 local M = {}
@@ -37,11 +38,27 @@ local function fresh()
     -- you say so (the chat ended, or is not open here); see queue.lua.
     parked = {},
     collapsed = {},
+    -- Chat key -> the name of the group of yours it was put in.
+    groups = {},
+    -- The newest introduction that has been shown (see ui/board.lua).
+    intro = 0,
+    -- The agent the last new chat was started with: the next one offers it.
+    last_agent = '',
+    -- Notifications as they were last switched from the board: 'on', 'off',
+    -- or '' when they never were (the `notify.enabled` option decides).
+    notify = '',
   }
 end
 
 function M.path()
-  return config.get().state_file or (vim.fn.stdpath('state') .. '/agent-chats/state.json')
+  local set = config.get().state_file
+  if type(set) == 'string' and set ~= '' then
+    -- With `~` taken for the home folder and a relative path made whole:
+    -- left as written, "~/x.json" would be a file in a folder called "~"
+    -- under whatever folder Neovim happens to be in.
+    return vim.fn.fnamemodify(vim.fs.normalize(set), ':p')
+  end
+  return vim.fn.stdpath('state') .. '/agent-chats/state.json'
 end
 
 local function normalise(t)
@@ -86,11 +103,24 @@ local function read()
   return raw, st.mtime
 end
 
+-- Said once: what is saved cannot be written.
+local unwritable = false
+
 local function write(t)
   local path = M.path()
   if fs.write_atomic(path, vim.json.encode(t)) then
     local st = fs.stat(path)
     loaded_mtime = st and st.mtime or nil
+  elseif not unwritable then
+    unwritable = true
+    vim.schedule(function()
+      vim.notify(
+        ('agent-chats: cannot write %s. Read marks, pins, names and queued replies are kept only until Neovim is closed.'):format(
+          fs.tilde(path)
+        ),
+        vim.log.levels.WARN
+      )
+    end)
   end
 end
 
@@ -138,18 +168,33 @@ local LOCK_WAIT_MS = 2000
 local function lock()
   local path = M.path() .. '.lock'
   fs.mkdirp(vim.fs.dirname(path))
-  local deadline = uv.now() + LOCK_WAIT_MS
+  -- By the real clock: the event loop's own does not move while this runs,
+  -- and a wait measured by it would never end.
+  local started = uv.hrtime()
   while true do
-    local fd = uv.fs_open(path, 'wx', 420)
+    local fd, _, why = uv.fs_open(path, 'wx', 420)
     if fd then
+      -- Whose it is, so that one left by an instance that died is known
+      -- for that at once.
+      uv.fs_write(fd, tostring(uv.os_getpid()))
       uv.fs_close(fd)
       return path
     end
+    if why ~= 'EEXIST' then
+      -- It cannot be made at all (a folder that cannot be written to):
+      -- waiting changes nothing.
+      return nil
+    end
+    local owner = tonumber(vim.trim(fs.read_small(path, 32) or ''))
     local st = fs.stat(path)
-    if st and os.time() - st.mtime > 5 then
+    local stale = (owner ~= nil and not proc.alive(owner))
+      or (st ~= nil and os.time() - st.mtime > 5)
+    if stale then
       -- Left behind by an instance that died mid-write.
-      uv.fs_unlink(path)
-    elseif uv.now() >= deadline then
+      if not uv.fs_unlink(path) and fs.stat(path) then
+        return nil
+      end
+    elseif (uv.hrtime() - started) / 1e6 >= LOCK_WAIT_MS then
       return nil
     else
       -- Short and uneven: with several instances waiting, one that slept
@@ -272,6 +317,43 @@ function M.note(key)
   return M.get().notes[key]
 end
 
+--- The group of your own that chat `key` is in; nil when it is in none (it
+--- is then listed by its status, as chats are).
+---@return string?
+function M.group(key)
+  return M.get().groups[key]
+end
+
+--- Put chat `key` in the group called `name`; nil or '' takes it out.
+function M.set_group(key, name)
+  name = type(name) == 'string' and vim.trim(name) or ''
+  M.update(function(s)
+    s.groups[key] = name ~= '' and name or nil
+  end)
+end
+
+--- The groups there are (those with a chat in them), by name, and how
+--- many chats each has.
+---@param known (fun(key: string): boolean)?  Which chats count: one that is gone from its agent's own store is still written here.
+---@return string[] names, table<string, integer> counts
+function M.groups(known)
+  local counts = {}
+  for key, name in pairs(M.get().groups) do
+    if not known or known(key) then
+      counts[name] = (counts[name] or 0) + 1
+    end
+  end
+  local names = vim.tbl_keys(counts)
+  table.sort(names, function(a, b)
+    local la, lb = a:lower(), b:lower()
+    if la ~= lb then
+      return la < lb
+    end
+    return a < b
+  end)
+  return names, counts
+end
+
 function M.set_note(key, text)
   M.update(function(s)
     s.notes[key] = (text and text ~= '') and text or nil
@@ -304,6 +386,31 @@ function M.enqueue(key, text)
     local q = s.queue[key] or {}
     q[#q + 1] = { text = text, at = os.time() }
     s.queue[key] = q
+  end)
+end
+
+--- What is kept for chat `old` is kept for `new` from now on. A chat
+--- started here goes by a stand-in name until its agent has named its
+--- session: a reply queued for it meanwhile must not stay behind under a
+--- name that no longer leads anywhere.
+function M.rekey(old, new)
+  local s = M.get()
+  if not (s.queue[old] or s.sending[old] or s.parked[old]) then
+    return
+  end
+  M.update(function(st)
+    if st.queue[old] then
+      local q = st.queue[new] or {}
+      vim.list_extend(q, st.queue[old])
+      st.queue[new], st.queue[old] = q, nil
+    end
+    if st.sending[old] then
+      st.sending[new] = math.max(st.sending[new] or 0, st.sending[old])
+      st.sending[old] = nil
+    end
+    if st.parked[old] then
+      st.parked[new], st.parked[old] = true, nil
+    end
   end)
 end
 
@@ -420,9 +527,65 @@ function M.set_collapsed(group, value)
   end)
 end
 
+-- The introduction ----------------------------------------------------------
+
+--- The newest introduction that has been shown (0: none yet).
+---@return integer
+function M.intro()
+  return M.get().intro or 0
+end
+
+function M.set_intro(version)
+  if M.intro() ~= version then
+    M.update(function(s)
+      s.intro = version
+    end)
+  end
+end
+
+--- The agent the last new chat was started with (nil: none yet).
+---@return string?
+function M.last_agent()
+  local name = M.get().last_agent
+  return (type(name) == 'string' and name ~= '') and name or nil
+end
+
+function M.set_last_agent(name)
+  if M.get().last_agent ~= name then
+    M.update(function(s)
+      s.last_agent = name
+    end)
+  end
+end
+
+--- Whether notifications were switched on or off from the board: true,
+--- false, or nil when that was never done (the option decides then). Kept
+--- with the rest, so that it holds in every Neovim and after a restart.
+---@return boolean?
+function M.notify()
+  local said = M.get().notify
+  if said == 'on' then
+    return true
+  elseif said == 'off' then
+    return false
+  end
+  return nil
+end
+
+---@param on boolean
+function M.set_notify(on)
+  local value = on and 'on' or 'off'
+  if M.get().notify ~= value then
+    M.update(function(s)
+      s.notify = value
+    end)
+  end
+end
+
 --- Drop the in-memory copy (tests).
 function M.reset()
   data, loaded_path, loaded_mtime, checked_at, foreign = nil, nil, nil, 0, 0
+  unwritable = false
 end
 
 return M

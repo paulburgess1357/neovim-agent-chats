@@ -216,7 +216,22 @@ end)
 describe('the board', function()
   it('says once, in one line, when an agent can only guess', function()
     local qx = require('helpers.qwen')
-    local home = qx.home({ board = { spinner = false } })
+    -- The hooks screen has no key of its own by default: the line names the command.
+    qx.home({ board = { spinner = false } })
+      :chat({ start = os.time() - 60 })
+      :turn('Hello', 'Hi.')
+      :write()
+    store().refresh_sync()
+    store().start = function() end
+    board().open()
+    has(
+      T.buf_text(board()._state.buf),
+      'Qwen can only guess "needs you". :Chats hooks sets up its hooks, once.'
+    )
+    board().close()
+
+    -- Given a key, it names the key.
+    local home = qx.home({ board = { spinner = false }, keys = { hooks = 'gh' } })
     home:chat({ start = os.time() - 60 }):turn('Hello', 'Hi.'):write()
     store().refresh_sync()
     store().start = function() end
@@ -260,7 +275,7 @@ describe('the board', function()
     board().open()
     board().goto_chat('claude:' .. chat.id)
     local pane = T.buf_text(api.nvim_win_get_buf(board()._state.pane_win))
-    has(pane, 'status from its hooks')
+    has(pane, 'Status  known from its hooks')
     has(pane, 'permission to use Bash')
     has(pane, 'Bash: make deploy')
   end)

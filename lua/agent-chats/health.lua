@@ -14,7 +14,7 @@ function M.sources(p)
   local label = p.label
   local has_recipe = type(p.hooks) == 'table' and type(p.hooks.config) == 'function'
   local st = has_recipe and hooks.status(p.name) or nil
-  local install = (':Chats hooks install %s'):format(p.name)
+  local install = require('agent-chats.config').command('hooks install ' .. p.name)
   local ignored = false
 
   if st and st.state == 'installed' then
@@ -109,6 +109,74 @@ function M.sources(p)
   return out
 end
 
+--- What there is to say about the board's keys: which default keys were
+--- left alone because they are mappings of yours, and what does their work.
+---@return { level: "ok"|"info", text: string, advice: string[]? }[]
+function M.keys()
+  local config = require('agent-chats.config')
+  local keys = require('agent-chats.keys')
+  local out = {}
+  local actions = vim.tbl_keys(config.get().keys)
+  table.sort(actions)
+  -- As the board has them when it is open (a mapping you put on its buffer
+  -- counts); otherwise as seen from any buffer: the global mappings.
+  local board = package.loaded['agent-chats.ui.board']
+  local buf = board and board.buf() or nil
+  -- What the menu does not list: these only move the cursor or the view.
+  local unlisted = {
+    next_prompt = 'moving to the next prompt in a conversation',
+    prev_prompt = 'moving to the previous prompt in a conversation',
+    scroll_down = 'scrolling the pane',
+    scroll_up = 'scrolling the pane',
+  }
+  for _, action in ipairs(actions) do
+    local plan = keys.resolve(action, 'n', buf)
+    local other = keys.shown(plan.bound)
+    for _, item in ipairs(plan.left) do
+      local rest
+      if other then
+        rest = other .. ' does that'
+      elseif action == 'menu' then
+        -- The menu cannot be what lists its own way in.
+        rest = ('%s opens it, and it has no key'):format(config.command('menu'))
+      elseif unlisted[action] then
+        rest = ('%s has no key now'):format(unlisted[action])
+      else
+        rest = 'that is in the menu, and has no key'
+      end
+      out[#out + 1] = {
+        level = 'info',
+        text = ('%s is yours (%s), so the board does not take it for "%s": %s'):format(
+          item.lhs,
+          item.by,
+          action,
+          rest
+        ),
+      }
+    end
+  end
+  -- The way back out of a chat's terminal while typing is a key of its
+  -- own (`open.back_key`), and gives way in the same manner.
+  local back = config.get().open.back_key
+  if type(back) == 'string' and not config.explicit_back_key() and keys.yours(back, 't') then
+    out[#out + 1] = {
+      level = 'info',
+      text = ("%s is yours while typing in a terminal, so a chat's terminal does not take it for going back to the list: leave typing mode there first, or set open.back_key"):format(
+        back
+      ),
+    }
+  end
+  if #out == 0 then
+    return { { level = 'ok', text = "None of the board's default keys is a mapping of yours" } }
+  end
+  -- (A line of its own: `vim.health.info` takes no advice.)
+  out[#out + 1] = {
+    level = 'info',
+    text = 'To have the board take a key all the same, name it in the options: keys = { <action> = "<key>" }',
+  }
+  return out
+end
+
 function M.check()
   local h = vim.health
   local config = require('agent-chats.config')
@@ -189,6 +257,25 @@ function M.check()
     h.warn('No chats of any agent were found', {
       'Start a chat with Claude Code, Codex, Qwen Code or opencode, or point providers.<name>.home at where its data lives.',
     })
+  end
+
+  h.start('agent-chats: notifications')
+  local notify = require('agent-chats.notify')
+  if notify.enabled() then
+    h.ok('Notifications are on')
+  elseif config.get().notify.enabled == false and require('agent-chats.state').notify() == nil then
+    h.info('Notifications are off (notify.enabled = false in the options)')
+  else
+    h.info(
+      ('Notifications are off: switched off on the board. %s switches them on again'):format(
+        require('agent-chats.keys').key('notify') or config.command('notify on')
+      )
+    )
+  end
+
+  h.start('agent-chats: keys')
+  for _, line in ipairs(M.keys()) do
+    h[line.level](line.text)
   end
 
   h.start('agent-chats: optional tools')

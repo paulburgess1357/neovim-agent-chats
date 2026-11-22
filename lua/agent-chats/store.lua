@@ -329,8 +329,9 @@ local function apply_live(chat, info, asked, reported, known, now)
   local function signature()
     -- `said_at` too: a turn that started and ended between two looks
     -- leaves everything else as it was, and is still news.
-    return ('%s|%s|%s|%s|%s|%s|%s|%s'):format(
+    return ('%s|%s|%s|%s|%s|%s|%s|%s|%s'):format(
       tostring(chat.live),
+      tostring(chat.unsure),
       tostring(chat.pid),
       tostring(chat.turn_live),
       tostring(chat.waiting_for),
@@ -344,10 +345,12 @@ local function apply_live(chat, info, asked, reported, known, now)
   local process = info or asked
   local missed = false
   if not known then
-    chat.live, chat.pid, chat.kind = nil, nil, nil
+    chat.live, chat.pid, chat.kind, chat.unsure = nil, nil, nil, nil
   elseif process then
     chat.live, chat.misses = true, 0
     chat.pid = process.pid or (asked and asked.pid) or nil
+    -- Which process it is was a guess among several (see the provider).
+    chat.unsure = (info and info.unsure) or nil
     chat.name = process.name or (asked and asked.name) or nil
     chat.name_explicit = process.name_explicit or (asked and asked.name_explicit) or nil
     chat.kind = process.kind or (asked and asked.kind) or nil
@@ -357,7 +360,7 @@ local function apply_live(chat, info, asked, reported, known, now)
     chat.misses = (chat.misses or 0) + 1
     missed = true
   else
-    chat.live, chat.pid, chat.kind = false, nil, nil
+    chat.live, chat.pid, chat.kind, chat.unsure = false, nil, nil, nil
   end
 
   local said
@@ -539,6 +542,31 @@ local function ask(p, mine)
   return hit.result
 end
 
+--- Give a chat that has a row before its agent has written anything (its
+--- id was given to it, and it is known only as a running process) what the
+--- terminal it was started in knows of it: the prompt it was started with,
+--- what to call it, and that terminal. A row that says "(no prompt yet)"
+--- for a chat that was given one would be wrong.
+---@return boolean changed
+local function from_terminal(chat)
+  local term = package.loaded['agent-chats.term']
+  if not (term and chat.stub) then
+    return false
+  end
+  local changed = false
+  for buf, t in pairs(term.terms) do
+    if t.owned and t.key == chat.key and vim.api.nvim_buf_is_valid(buf) then
+      if t.prompt and not chat.first_prompt then
+        chat.first_prompt, changed = t.prompt, true
+      end
+      if chat.term == nil then
+        chat.term, changed = buf, true
+      end
+    end
+  end
+  return changed
+end
+
 --- Whether `pid`, which a hook named at `at`, is still that agent's process.
 local function still_running(p, pid, at)
   if not proc.alive(pid) then
@@ -550,7 +578,19 @@ local function still_running(p, pid, at)
     return false
   end
   local names = type(p.hooks) == 'table' and p.hooks.process or nil
-  return proc.is(pid, names or { [p.name] = true })
+  if not proc.is(pid, names or { [p.name] = true }) then
+    return false
+  end
+  -- The agent's own program, but is it a process that has a chat open? (A
+  -- daemon that runs hooks for every session is not.)
+  local holds = type(p.hooks) == 'table' and p.hooks.holds or nil
+  if holds then
+    local ok, yes = pcall(holds, pid)
+    if ok and not yes then
+      return false
+    end
+  end
+  return true
 end
 
 ---@return boolean changed
@@ -570,6 +610,22 @@ local function refresh_provider(p, full, now, cutoff)
   end
 
   local first_load = next(mine) == nil
+  -- A terminal of ours that is still under its stand-in waits for its
+  -- agent's session to appear. The chats there were before this look, so
+  -- that one which appears in it is known for new (see below).
+  local known ---@type table<string, boolean>?
+  do
+    local term = package.loaded['agent-chats.term']
+    for _, t in pairs(term and term.terms or {}) do
+      if t.unstarted and t.provider == name then
+        known = {}
+        for id in pairs(mine) do
+          known[id] = true
+        end
+        break
+      end
+    end
+  end
 
   -- The three sources, most direct first.
   local rules = hook_rules(p)
@@ -649,6 +705,8 @@ local function refresh_provider(p, full, now, cutoff)
         and e.mtime < cutoff
         and not (running and running[e.id])
         and not state.pinned(key)
+        -- (Nor one you put in a group: it stays where you put it.)
+        and not state.group(key)
       if old then
         -- Past board.max_age_days: not read, and no longer listed if it was.
         if chat and not chat.stub then
@@ -707,8 +765,20 @@ local function refresh_provider(p, full, now, cutoff)
 
   -- The very first look at processes had no chats to match them to (an
   -- agent without a registry is matched by folder, by time, by which chat
-  -- started which). Now that they are read, look once more.
-  if first_load and p.live and next(mine) ~= nil then
+  -- started which). Now that they are read, look once more. The same when
+  -- a chat has appeared in this look that a terminal of ours may have been
+  -- waiting for: found and given its terminal in one look, not listed for
+  -- a moment as a chat of its own that nobody has open.
+  local again = first_load
+  if not again and known then
+    for id, chat in pairs(mine) do
+      if not known[id] and not chat.stub then
+        again = true
+        break
+      end
+    end
+  end
+  if again and p.live and next(mine) ~= nil then
     if rules then
       for id, chat in pairs(mine) do
         if not chat.subagent and (reporting[name][id] or alias[id] or hot(chat, now)) then
@@ -756,6 +826,7 @@ local function refresh_provider(p, full, now, cutoff)
           status = 'idle',
         }
         M.chats[mine[id].key] = mine[id]
+        from_terminal(mine[id])
         changed = true
       end
     end
@@ -814,16 +885,42 @@ local function refresh_provider(p, full, now, cutoff)
   return changed
 end
 
+-- A chat started here is listed under a stand-in until its agent has named
+-- its session, and from then on it is that session's chat. Whatever still
+-- knows it by the stand-in's name is led on: stand-in key -> the chat's key.
+local moved = {} ---@type table<string, string>
+-- Sessions that have just appeared and are about to be recognised as the
+-- chat of a terminal of ours that is still listed under a stand-in: for the
+-- look or two that takes they are not listed twice.
+local pending = {} ---@type table<string, boolean>
+
+--- The key chat `key` goes by now (see `moved`).
+---@return string
+function M.current_key(key)
+  if not M.chats[key] and moved[key] and M.chats[moved[key]] then
+    return moved[key]
+  end
+  return key
+end
+
 --- Terminals of this Neovim whose agent has started no session yet: a new
 --- chat that has not been sent a prompt, for an agent that writes nothing
 --- until then. Each gets a row all the same. Without one, going back to
 --- the list would leave a running terminal that nothing leads to.
+---
+--- That holds as well for an agent that was told which id to give its
+--- session: until it has written a transcript or put itself on its list of
+--- running sessions, nothing else knows of the chat, and how long that
+--- takes is the agent's business.
 ---@return boolean changed
 local function list_unstarted(term)
   local want = {}
   for buf, t in pairs(term.terms) do
-    if t.owned and t.unstarted and t.provider and vim.api.nvim_buf_is_valid(buf) then
-      want[t.key] = buf
+    if t.owned and t.provider and t.key and vim.api.nvim_buf_is_valid(buf) then
+      local known = M.chats[t.key]
+      if t.unstarted or known == nil or known.unstarted then
+        want[t.key] = buf
+      end
     end
   end
   local changed = false
@@ -832,11 +929,57 @@ local function list_unstarted(term)
       local buf = want[chat.key]
       if not buf then
         -- Its session has shown up (the terminal is that chat's now), or
-        -- the terminal is gone.
+        -- the terminal is gone. In the first case, what was written for it
+        -- under the stand-in's name goes with it: a reply queued, one on
+        -- its way, a draft.
+        for _, t in pairs(term.terms) do
+          if t.owned and t.standin == chat.key and t.key ~= chat.key and M.chats[t.key] then
+            moved[chat.key] = t.key
+            state.rekey(chat.key, t.key)
+            local actions = package.loaded['agent-chats.actions']
+            if actions and actions.moved then
+              pcall(actions.moved, chat.key, t.key)
+            end
+          end
+        end
         drop(chat)
         changed = true
-      elseif chat.term ~= buf then
-        chat.term, changed = buf, true
+      else
+        if chat.term ~= buf then
+          chat.term, changed = buf, true
+        end
+        -- Given a prompt, it is at work on it for all anyone can tell (its
+        -- agent says nothing of itself yet). Not for ever: an agent that
+        -- stays silent is not taken to be busy for good.
+        local t = term.terms[buf]
+        local busy = t ~= nil and t.prompt ~= nil and os.time() - (t.started or 0) < 60
+        local turn = busy and 'working' or 'unknown'
+        if chat.turn ~= turn then
+          chat.turn, chat.turn_file, changed = turn, turn, true
+        end
+      end
+    end
+  end
+  -- A session that is new, in the folder of a terminal of ours that is still
+  -- under its stand-in, and has no terminal yet: about to be recognised as
+  -- that terminal's chat. Until it is, the stand-in stands for it.
+  pending = {}
+  for _, buf in pairs(want) do
+    local t = term.terms[buf]
+    if t and t.unstarted then
+      for key, chat in pairs(M.chats) do
+        if
+          not chat.unstarted
+          and not chat.stub
+          and chat.provider == t.provider
+          and chat.cwd == t.cwd
+          and not chat.term
+          and chat.live ~= true
+          and (chat.created or 0) >= (t.started or 0) - 2
+          and os.time() - (t.started or 0) < 60
+        then
+          pending[key] = true
+        end
       end
     end
   end
@@ -849,18 +992,30 @@ local function list_unstarted(term)
         id = key:match(':(.*)$'),
         stub = true,
         unstarted = true,
+        -- What it was started with is known here, before its agent has
+        -- written a word: a row that says "(no prompt yet)" for a chat that
+        -- was given one would be wrong.
+        first_prompt = t.prompt,
         cwd = t.cwd,
         created = t.started,
         updated = t.started,
         mtime = 0,
         size = 0,
-        turn = 'unknown',
-        turn_file = 'unknown',
+        turn = t.prompt and 'working' or 'unknown',
+        turn_file = t.prompt and 'working' or 'unknown',
         live = true,
         term = buf,
         source = 'transcript',
-        status = 'idle',
+        status = t.prompt and 'working' or 'idle',
       }
+      changed = true
+    end
+  end
+  -- A chat that has a row before its agent has written anything (its id
+  -- was given to it, and its process has been seen) is shown with what it
+  -- was started with, too.
+  for _, chat in pairs(M.chats) do
+    if chat.stub and from_terminal(chat) then
       changed = true
     end
   end
@@ -909,6 +1064,13 @@ local function restatus(now, quiet)
       state.mark_seen(key)
       st = chat.live and 'idle' or 'ended'
     end
+    -- Open in a terminal of this Neovim: "Ended" (not open, can be resumed)
+    -- would be wrong, whatever a look at the processes has found so far. A
+    -- chat that was resumed a moment ago is not seen running until the
+    -- next look, and its terminal is there to go to all the same.
+    if st == 'ended' and term and not chat.subagent and term.find(chat) then
+      st = 'idle'
+    end
     if quiet and chat.status ~= st and not (MARKED[st] and MARKED[chat.status or 'ended']) then
       st, inferred = chat.status, chat.inferred or false
     end
@@ -952,7 +1114,7 @@ local function restatus(now, quiet)
         -- old chat coming into view.
         local fresh = not quiet and (ended >= started_at - 2 or before ~= nil)
         if st == 'done' then
-          -- "Done, unread" is news when a turn has ended that had not
+          -- "Unread" is news when a turn has ended that had not
           -- before, whoever notices it (a key pressed while a refresh is
           -- half-way included). Marking a chat unread ends no turn.
           if known == nil then
@@ -1147,6 +1309,25 @@ function M.exited(key)
 end
 
 --- Recompute statuses after a change to the saved state (read marks, ...).
+--- A terminal was started for a chat a moment ago: the chat gets its row
+--- now, not at the next look at the agents' files.
+function M.started()
+  if not M.initialized then
+    return
+  end
+  local ok, term = pcall(require, 'agent-chats.term')
+  local listed = ok and list_unstarted(term)
+  -- A chat that was resumed is open from this moment: its row must not go
+  -- on saying "Ended" until the next look.
+  local transitions = restatus(os.time(), true)
+  if listed or #transitions > 0 then
+    emit({ type = 'update' })
+  end
+  for _, tr in ipairs(transitions) do
+    emit(tr)
+  end
+end
+
 function M.touch()
   if not M.initialized then
     return
@@ -1246,6 +1427,10 @@ function M.get(key)
   if M.chats[key] then
     return M.chats[key]
   end
+  -- Known by a stand-in's name until its agent named its session.
+  if moved[key] and M.chats[moved[key]] then
+    return M.chats[moved[key]]
+  end
   -- A subagent listed under its parent.
   local parent = key:match('^(.-)/[^/]+$')
   for _, sub in ipairs(parent and subagents[parent] or {}) do
@@ -1293,7 +1478,7 @@ function M.list(opts)
       and not chat.last_prompt
       and not chat.last_reply
       and not chat.title
-    if not nested and not empty then
+    if not nested and not empty and not pending[key] then
       if (opts and opts.archived) or not state.is_archived(key, chat.updated) then
         out[#out + 1] = chat
       end
@@ -1328,6 +1513,7 @@ function M.reset()
   running, waiters, queued, counts_cache = false, {}, nil, nil
   last_full, fast, cache_loaded, cache_dirty = 0, false, false, false
   reporting, aliases, answers, seen_alive = {}, {}, {}, {}
+  moved, pending = {}, {}
   started_at = os.time()
   ended_at = {}
   seen_foreign = 0

@@ -29,6 +29,9 @@ local told = {} ---@type table<string, boolean>
 -- something of its own), and when. Nothing more is typed into one until
 -- something changes there: its status, or you typing in its terminal.
 local held = {} ---@type table<string, number>
+-- Chats whose queued reply waits because the user is typing in that
+-- terminal (said once each time).
+local waiting_for_you = {} ---@type table<string, boolean>
 
 local function busy(chat)
   return chat.status == 'working' or chat.status == 'attention'
@@ -54,6 +57,23 @@ local function ready(chat)
   if chat.subagent or busy(chat) or not buf or state.parked(chat.key) then
     return false
   end
+  if require('agent-chats.term').has_unsent(buf) then
+    -- You are typing there: a reply pasted now would run into your text,
+    -- and Enter would send both as one message. It goes when what you
+    -- typed has been sent or thrown away.
+    if not waiting_for_you[chat.key] then
+      waiting_for_you[chat.key] = true
+      vim.notify(
+        ('A queued reply for “%s” is waiting: its terminal holds something you typed and have not sent. It goes once that is sent, or cleared.'):format(
+          require('agent-chats.display').title(chat, 50)
+        ),
+        vim.log.levels.INFO,
+        { title = 'Agent chats' }
+      )
+    end
+    return false, 2
+  end
+  waiting_for_you[chat.key] = nil
   if held[chat.key] then
     local typed = require('agent-chats.term').typed_at(buf)
     if not typed or typed <= held[chat.key] then
@@ -113,15 +133,13 @@ local function left_behind(chat)
   end
   local display = require('agent-chats.display')
   vim.notify(
-    ('“%s” ended with %d %s still queued. %s kept%s.'):format(
+    ('“%s” ended with %d %s still queued. %s kept: %s on the chat sends or drops %s.'):format(
       display.title(chat, 50),
       n,
       n == 1 and 'reply' or 'replies',
       n == 1 and 'It is' or 'They are',
-      require('agent-chats.config').hint(
-        'queue',
-        ': press %s on the chat to send or drop ' .. (n == 1 and 'it' or 'them')
-      )
+      require('agent-chats.keys').reach('queue'),
+      n == 1 and 'it' or 'them'
     ),
     vim.log.levels.WARN,
     { title = 'Agent chats' }
@@ -203,7 +221,7 @@ function M.setup()
       state.sent(key)
     elseif ev.to == 'ended' and ev.fresh and ev.from ~= nil and #state.queue(key) > 0 then
       -- It ended under us with replies waiting. (A chat that ends while it
-      -- is "done, unread" makes no such move; the sweep notices that one.)
+      -- is "unread" makes no such move; the sweep notices that one.)
       state.park(key)
       if not told[key] and not ev.chat.subagent then
         told[key] = true
@@ -227,7 +245,7 @@ function M.reset()
     recheck = nil
   end
   sweeping = false
-  held, open_here, told = {}, {}, {}
+  held, open_here, told, waiting_for_you = {}, {}, {}, {}
 end
 
 return M

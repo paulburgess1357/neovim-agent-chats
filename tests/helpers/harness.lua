@@ -141,6 +141,34 @@ function M.wait(ms, cond, msg)
   end
 end
 
+--- Run `fn` while typing in the terminal the cursor is in (Neovim's
+--- terminal mode), then leave that mode again. A script is never in
+--- terminal mode by itself (`:startinsert` only takes effect when Neovim
+--- next waits for a key), so the key is fed, and `fn` runs from a timer
+--- while Neovim waits for more.
+function M.typing(fn)
+  if vim.bo.buftype ~= 'terminal' then
+    fail('the cursor is not in a terminal', 2)
+  end
+  local ran, err = false, nil
+  vim.defer_fn(function()
+    local good, e = pcall(fn)
+    ran, err = true, (not good) and e or nil
+    vim.api.nvim_feedkeys(
+      vim.api.nvim_replace_termcodes('<C-\\><C-n>', true, true, true),
+      'n',
+      false
+    )
+  end, 30)
+  vim.api.nvim_feedkeys('i', 'x!', false)
+  if err then
+    error(err, 0)
+  end
+  if not ran then
+    fail('the terminal was never typed in', 2)
+  end
+end
+
 --- Lines of a buffer joined with newlines.
 function M.buf_text(buf)
   return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), '\n')

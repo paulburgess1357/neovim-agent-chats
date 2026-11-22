@@ -22,6 +22,8 @@ local M = {}
 ---@field owned boolean    Started as the terminal's own job (so the job ending means the chat ended).
 ---@field trust number?    For terminals opened by a user function: epoch seconds until which `key` is believed without a process to confirm it.
 ---@field title string?
+---@field label (string|table)?  What it runs, for a window title: a chat, `{ agent, name, dir }`, or words.
+---@field prompt string?   The first prompt a new chat was started with.
 
 ---@type table<integer, agent_chats.Term>
 M.terms = {}
@@ -52,6 +54,68 @@ function M.note_typed(buf, at)
   typed[buf] = at or wall_clock()
 end
 
+-- What was typed into each terminal since Enter was last pressed there,
+-- in the runs it was typed in: a run ends where the cursor may have moved
+-- (an arrow key, Esc), so that each is text that stands together.
+local runs = {} ---@type table<integer, { text: string, at: number }[]>
+-- A run counts for this long: text typed and left for longer is not what
+-- holds a queued reply back.
+local UNSENT_SECS = 900
+local UNSENT_RUNS = 3
+-- Keys further apart than this are not one run of text.
+local UNSENT_PAUSE = 5
+
+--- Record a key typed into terminal `buf` (the key watcher, and tests).
+---@param key string  As Neovim hands it to `vim.on_key`.
+function M.note_key(buf, key)
+  local b = key:byte()
+  if not b then
+    return
+  end
+  -- Enter sends what is there; Ctrl-C and Ctrl-U throw it away.
+  if b == 13 or b == 3 or b == 21 then
+    runs[buf] = nil
+    return
+  end
+  local list = runs[buf]
+  local last = list and list[#list]
+  local now = wall_clock()
+  if b == 127 or b == 8 then
+    -- Backspace takes the last character back.
+    if last then
+      last.text = last.text:gsub('[%z\1-\127\194-\244][\128-\191]*$', '')
+    end
+    return
+  end
+  if b == 23 then
+    -- Ctrl-W: the last word.
+    if last then
+      last.text = last.text:gsub('%S*%s*$', '')
+    end
+    return
+  end
+  local printable = (b >= 32 and b <= 126) or (b >= 194 and b <= 244)
+  -- Anything else may have moved the cursor, and so may a pause: what
+  -- comes next is a run of its own. (A key that answers a dialog is one
+  -- key now and another much later, never a run.)
+  if last and last.text ~= '' and (not printable or now - last.at > UNSENT_PAUSE) then
+    last = { text = '', at = now }
+    list[#list + 1] = last
+    while #list > UNSENT_RUNS do
+      table.remove(list, 1)
+    end
+  end
+  if not printable then
+    return
+  end
+  if not list then
+    last = { text = '', at = now }
+    list = { last }
+    runs[buf] = list
+  end
+  last.text, last.at = last.text .. key, now
+end
+
 local function valid(buf)
   return type(buf) == 'number' and vim.api.nvim_buf_is_valid(buf)
 end
@@ -60,9 +124,18 @@ local function is_float(win)
   return vim.api.nvim_win_get_config(win).relative ~= ''
 end
 
---- Whether the user is looking at this terminal right now.
+--- Whether the user is looking at this terminal right now: the cursor is
+--- in it, or it is shown live in the board's pane beside the list the cursor
+--- is in (a reply sent from the list is watched arriving there).
 function M.is_focused(buf)
-  return nvim_focused and valid(buf) and vim.api.nvim_get_current_buf() == buf
+  if not (nvim_focused and valid(buf)) then
+    return false
+  end
+  if vim.api.nvim_get_current_buf() == buf then
+    return true
+  end
+  local board = package.loaded['agent-chats.ui.board']
+  return board ~= nil and board.is_showing(buf)
 end
 
 -----------------------------------------------------------------------------
@@ -203,9 +276,29 @@ end
 -- Starting agents
 -----------------------------------------------------------------------------
 
+-- An agent that exits this soon after it was started did not do what it
+-- was started for.
+local QUICK_EXIT_SECS = 4
+
 local function on_exit(buf, code)
   local term = M.terms[buf]
   M.terms[buf] = nil
+  runs[buf] = nil
+  -- (Not one that was killed: closing its terminal, or Neovim, is not the
+  -- agent failing.)
+  local killed = code > 128 or vim.v.exiting ~= vim.NIL
+  if
+    term
+    and term.quick
+    and not killed
+    and (vim.uv.hrtime() - (term.born or 0)) / 1e9 < QUICK_EXIT_SECS
+  then
+    -- Whoever started it gets to keep what it was started with.
+    local quick = term.quick
+    vim.schedule(function()
+      pcall(quick, code)
+    end)
+  end
   vim.schedule(function()
     if term and term.owned and valid(buf) then
       if code == 0 and config.get().open.close_on_exit then
@@ -235,12 +328,161 @@ local function on_exit(buf, code)
   end)
 end
 
+-----------------------------------------------------------------------------
+-- A chat's terminal: the ways back, and the user's own setup
+-----------------------------------------------------------------------------
+
+local complained = false
+
+--- The chat that terminal `buf` holds, as far as is known.
+---@return agent_chats.Chat?
+local function chat_in(buf)
+  local store = package.loaded['agent-chats.store']
+  if not store then
+    return nil
+  end
+  local term = M.terms[buf]
+  if term and term.key and store.chats[term.key] then
+    return store.chats[term.key]
+  end
+  for _, chat in pairs(store.chats) do
+    if chat.term == buf then
+      return chat
+    end
+  end
+  return nil
+end
+
+--- Make terminal `buf` a chat's terminal, once: map the way back to the
+--- list, and, for a terminal this plugin started, hand it to the user's own
+--- setup (`open.on_open`, and the User event AgentChatsTerminal). Whatever
+--- that sets is the last word: nothing here is applied to the buffer again.
+---
+--- A terminal the user made (a chat started by hand in a `:terminal`, one
+--- from `open.where`) is theirs: it gets the one key that goes back while
+--- typing, as it always has, and is otherwise left as they set it up.
+---@param chat agent_chats.Chat?  The chat it holds, when the caller knows.
+---@return string? typing, string? normal  The keys that go back to the list from it now: while typing, and in its normal mode.
+function M.prepare(buf, chat)
+  if not valid(buf) or vim.bo[buf].buftype ~= 'terminal' then
+    return nil, nil
+  end
+  if vim.b[buf].agent_chats_ready then
+    return M.back_keys(buf)
+  end
+  vim.b[buf].agent_chats_ready = true
+  local cfg = config.get().open
+  local keys = require('agent-chats.keys')
+  local function to_list()
+    -- The board when it is open, else a new one: either way, the list.
+    require('agent-chats.ui.board').open()
+  end
+  local back = false
+  if type(cfg.back_key) == 'string' and cfg.back_key ~= '' then
+    -- While typing, every plain key belongs to the agent. The default
+    -- gives way to a terminal mapping of yours on it; a key you chose
+    -- yourself is bound, as with `keys`.
+    if
+      keys.map_key(buf, 't', cfg.back_key, to_list, 'back to the list', config.explicit_back_key())
+    then
+      back = cfg.back_key
+    end
+  end
+  vim.b[buf].agent_chats_back = back
+  vim.b[buf].agent_chats_back_normal = false
+  local term = M.terms[buf]
+  if not (term and term.owned) then
+    return M.back_keys(buf)
+  end
+  -- In the terminal's normal mode the board's own "back" does it too.
+  local bound = keys.map(buf, 'n', 'back', to_list, 'back to the list')
+  for _, lhs in ipairs(bound) do
+    if keys.shown({ lhs }) then
+      vim.b[buf].agent_chats_back_normal = lhs
+      break
+    end
+  end
+
+  chat = chat or chat_in(buf)
+  if type(cfg.on_open) == 'function' then
+    local ok, said = pcall(cfg.on_open, buf, chat)
+    if not ok and not complained then
+      complained = true
+      vim.schedule(function()
+        vim.notify('agent-chats: open.on_open failed: ' .. tostring(said), vim.log.levels.WARN)
+      end)
+    elseif ok and type(said) == 'table' then
+      -- Keys of its own that go back to the list, which it vouches for:
+      -- the title names them in place of the ones it mapped over.
+      local function key(lhs)
+        return type(lhs) == 'string' and lhs ~= '' and lhs or false
+      end
+      local named = { normal = key(said.back), typing = key(said.back_typing) }
+      vim.b[buf].agent_chats_said = named
+      local unmapped = {}
+      if named.normal and not keys.yours(named.normal, 'n', buf) then
+        unmapped[#unmapped + 1] = ('back = %q'):format(named.normal)
+      end
+      if named.typing and not keys.yours(named.typing, 't', buf) then
+        unmapped[#unmapped + 1] = ('back_typing = %q'):format(named.typing)
+      end
+      if #unmapped > 0 and not complained then
+        complained = true
+        vim.schedule(function()
+          vim.notify(
+            ('agent-chats: open.on_open returned %s, but nothing of yours is mapped there in the terminal, so the title does not name it'):format(
+              table.concat(unmapped, ' and ')
+            ),
+            vim.log.levels.WARN
+          )
+        end)
+      end
+    end
+  end
+  pcall(vim.api.nvim_exec_autocmds, 'User', {
+    pattern = 'AgentChatsTerminal',
+    modeline = false,
+    data = { buf = buf, key = chat and chat.key or nil, chat = chat },
+  })
+  return M.back_keys(buf)
+end
+
+--- The keys that go back to the list from terminal `buf` as it is now: the
+--- one for while typing, and the one for its normal mode. A key your own
+--- setup has since put something else on is not named: it is yours now.
+---@return string? typing, string? normal
+function M.back_keys(buf)
+  if not valid(buf) then
+    return nil, nil
+  end
+  local keys = require('agent-chats.keys')
+  local typing, normal = vim.b[buf].agent_chats_back, vim.b[buf].agent_chats_back_normal
+  typing = type(typing) == 'string' and keys.is_ours(buf, 't', typing) and typing or nil
+  normal = type(normal) == 'string' and keys.is_ours(buf, 'n', normal) and normal or nil
+  -- What `open.on_open` said its own mappings are comes first, where there
+  -- is a mapping of yours on the key it named: a title must not name a key
+  -- that does nothing.
+  local said = vim.b[buf].agent_chats_said
+  if type(said) == 'table' then
+    if type(said.typing) == 'string' and keys.yours(said.typing, 't', buf) then
+      typing = said.typing
+    end
+    if type(said.normal) == 'string' and keys.yours(said.normal, 'n', buf) then
+      normal = said.normal
+    end
+  end
+  return typing, normal
+end
+
 ---@class agent_chats.SpawnSpec
 ---@field argv string[]
 ---@field cwd string?
 ---@field key string?       Chat key, when it is known before the agent starts.
 ---@field provider string?
 ---@field title string?
+---@field label (string|table)?  What it runs, for a window title: a chat, `{ agent, name, dir }`, or words; `title` when nil.
+---@field prompt string?    The first prompt, for a chat that is new.
+---@field on_quick_exit fun(code: integer)?  Called when the agent exits within a few seconds of starting: it did not do what it was started for.
 ---@field chat agent_chats.Chat?
 ---@field env table<string, string>?
 
@@ -254,6 +496,10 @@ function M.spawn(spec)
   end
   if vim.fn.executable(spec.argv[1]) ~= 1 then
     return nil, ('%s is not on PATH'):format(spec.argv[1])
+  end
+  local long = M.too_long(spec.argv)
+  if long then
+    return nil, long
   end
 
   if type(cfg.where) == 'function' then
@@ -278,13 +524,15 @@ function M.spawn(spec)
         owned = false,
         trust = os.time() + 20,
         title = spec.title,
+        label = spec.label,
       }
+      M.prepare(buf, spec.chat)
       return buf, nil
     end
     return nil, nil
   end
 
-  local win, buf = M.open_window(cfg.where, nil, spec.title)
+  local win, buf = M.open_window(cfg.where, nil, spec.label or spec.title)
   local ok, job = pcall(vim.api.nvim_buf_call, buf, function()
     return vim.fn.jobstart(spec.argv, {
       term = true,
@@ -299,44 +547,132 @@ function M.spawn(spec)
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
     return nil, 'could not start ' .. spec.argv[1] .. (ok and '' or (': ' .. tostring(job)))
   end
+  -- A new chat of an agent that names its session itself has no key yet.
+  -- It is listed under a stand-in until the session shows up (store.lua),
+  -- or there would be no way back to this terminal from the board.
+  -- (The process id keeps the stand-in apart from those of other
+  -- Neovims and of earlier sessions: buffer numbers repeat.)
+  local standin = not spec.key
+      and ('%s:term-%d-%d'):format(spec.provider or 'agent', vim.uv.os_getpid(), buf)
+    or nil
   M.terms[buf] = {
-    -- A new chat of an agent that names its session itself has no key yet.
-    -- It is listed under a stand-in until the session shows up (store.lua),
-    -- or there would be no way back to this terminal from the board.
-    -- (The process id keeps the stand-in apart from those of other
-    -- Neovims and of earlier sessions: buffer numbers repeat.)
-    key = spec.key or ('%s:term-%d-%d'):format(spec.provider or 'agent', vim.uv.os_getpid(), buf),
+    key = spec.key or standin,
+    -- Kept when the terminal goes by its chat's real key: what was written
+    -- for the stand-in is found by it (see `store.current_key`).
+    standin = standin,
     unstarted = spec.key == nil or nil,
     started_for = spec.key,
+    born = vim.uv.hrtime(),
+    quick = spec.on_quick_exit,
     provider = spec.provider,
     owned = true,
     title = spec.title,
+    label = spec.label,
+    prompt = spec.prompt,
     cwd = spec.cwd,
     started = os.time(),
   }
   vim.b[buf].agent_chats = true
+  M.prepare(buf, spec.chat)
+  -- The pane was titled before there was a terminal in it: now it can say
+  -- how to get back.
+  local shown = package.loaded['agent-chats.ui.board']
+  if shown then
+    shown.pane_entered(buf, spec.chat or spec.label or spec.title)
+  end
   if spec.title then
+    -- Named as the conversation of a chat is ("Agent chat: ..."), and not
+    -- like a path: a tab line cuts what looks like one down to initials.
+    local agent = spec.provider and require('agent-chats.providers').label(spec.provider) or nil
+    -- (What it is called on its row, where that is known: a new chat is
+    -- its first prompt there, not the folder it was started in.)
+    local called = (type(spec.label) == 'table' and not spec.label.key and spec.label.name)
+      or spec.title
     pcall(
       vim.api.nvim_buf_set_name,
       buf,
-      ('agent-chats://%s/%s#%d'):format(spec.provider or 'agent', spec.title, buf)
+      ('Agent chat: %s%s [%d]'):format(
+        (called:gsub('[/\\]', '∕')),
+        agent and (' · ' .. agent) or '',
+        buf
+      )
     )
   end
   if vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_set_current_win(win)
     -- A terminal window follows output only with the cursor on the last line.
     pcall(vim.api.nvim_win_set_cursor, win, { vim.api.nvim_buf_line_count(buf), 0 })
-    if cfg.start_insert then
-      vim.cmd.startinsert()
-    end
+    M.start_typing(buf)
   end
   return buf, nil
+end
+
+--- Go into typing in terminal `buf` (when `open.start_insert` is on and
+--- the cursor is still there), a moment from now. Not at once: when this is
+--- reached from a box that was being typed in, that insert mode is still
+--- being left, and Neovim ignores `:startinsert` until it has been. The
+--- cursor would be left in the terminal's normal mode, where nothing that
+--- is typed reaches the agent.
+function M.start_typing(buf)
+  if not config.get().open.start_insert then
+    return
+  end
+  vim.schedule(function()
+    if
+      valid(buf)
+      and vim.api.nvim_get_current_buf() == buf
+      and vim.bo[buf].buftype == 'terminal'
+      and vim.api.nvim_get_mode().mode ~= 't'
+    then
+      vim.cmd.startinsert()
+    end
+  end)
+end
+
+-- The most one argument of a command may hold (Linux: 128 KiB, the
+-- terminator included). A program started with more does not start: the
+-- terminal would open and close on nothing, and the text would be gone.
+local ARG_MAX = 128 * 1024 - 1
+
+--- Why `argv` cannot be run at all, in words; nil when it can.
+---@param argv string[]
+---@return string?
+function M.too_long(argv)
+  for _, a in ipairs(argv) do
+    if #a > ARG_MAX then
+      return ('what it would be started with is too long for a program to be given when it starts (%d KB; the limit is %d KB). Start it with less and paste the rest into its terminal'):format(
+        math.ceil(#a / 1024),
+        math.floor(ARG_MAX / 1024)
+      )
+    end
+  end
+  return nil
+end
+
+-- Chats a reply is being answered for in the background right now (their
+-- agent runs with no terminal): chat key -> the process.
+local backgrounds = {} ---@type table<string, { pid: integer, started: integer }>
+
+--- Whether a reply to `chat` that was sent from here is being answered in
+--- the background at this moment. Such a chat is running, and not in any
+--- terminal: there is nothing to type into, here or elsewhere.
+---@return boolean
+function M.in_background(chat)
+  local run = backgrounds[chat.key]
+  if not run then
+    return false
+  end
+  if not proc.alive(run.pid) then
+    backgrounds[chat.key] = nil
+    return false
+  end
+  return true
 end
 
 --- Run an agent with no terminal (a background reply). `cb(code, stderr)`.
 ---@param spec agent_chats.SpawnSpec
 ---@param cb fun(code: integer, stderr: string)?
----@return boolean ok, string? err
+---@return boolean ok, string? err, integer? pid
 function M.background(spec, cb)
   if spec.cwd and not fs.is_dir(spec.cwd) then
     return false, ('its folder no longer exists (%s)'):format(fs.tilde(spec.cwd))
@@ -344,22 +680,39 @@ function M.background(spec, cb)
   if vim.fn.executable(spec.argv[1]) ~= 1 then
     return false, ('%s is not on PATH'):format(spec.argv[1])
   end
-  local ok, err = pcall(
-    vim.system,
-    spec.argv,
-    { cwd = spec.cwd, env = spec.env, text = true, stdin = false },
-    function(res)
-      if cb then
+  local long = M.too_long(spec.argv)
+  if long then
+    return false, long
+  end
+  local job
+  local ok, err = pcall(function()
+    job = vim.system(
+      spec.argv,
+      { cwd = spec.cwd, env = spec.env, text = true, stdin = false },
+      function(res)
         vim.schedule(function()
-          cb(res.code, res.stderr or '')
+          if
+            spec.key
+            and job
+            and backgrounds[spec.key]
+            and backgrounds[spec.key].pid == job.pid
+          then
+            backgrounds[spec.key] = nil
+          end
+          if cb then
+            cb(res.code, res.stderr or '')
+          end
         end)
       end
-    end
-  )
-  if not ok then
+    )
+  end)
+  if not ok or not job then
     return false, tostring(err)
   end
-  return true, nil
+  if spec.key then
+    backgrounds[spec.key] = { pid = job.pid, started = os.time() }
+  end
+  return true, nil, job.pid
 end
 
 -----------------------------------------------------------------------------
@@ -408,6 +761,23 @@ function M.still_hosts(buf, chat)
     return false
   end
   return M.job_above(chat.pid, { [job] = buf }) == buf
+end
+
+--- Whether the agent of `chat` is what reads terminal `buf` right now.
+--- An agent that was started by hand in a shell and then suspended
+--- (Ctrl-Z), or sent to the background, leaves the shell reading: what is
+--- pasted would be run by the shell as commands. A terminal the plugin
+--- started for the chat has no shell in between.
+---@return boolean
+function M.reads(buf, chat)
+  local term = M.terms[buf]
+  if term and term.owned then
+    return true
+  end
+  if not chat.pid then
+    return true
+  end
+  return proc.foreground(chat.pid) ~= false
 end
 
 --- Set `chat.term` for every chat hosted by a terminal of this Neovim.
@@ -533,9 +903,41 @@ local ECHO_POLL_MS = 40
 local typing = {} ---@type table<integer, boolean>
 
 --- The end of what the terminal `buf` holds: its screen and a little above.
-local function tail_text(buf)
+local function tail_text(buf, lines)
   local n = vim.api.nvim_buf_line_count(buf)
-  return table.concat(vim.api.nvim_buf_get_lines(buf, math.max(0, n - 200), n, false), '\n')
+  return table.concat(
+    vim.api.nvim_buf_get_lines(buf, math.max(0, n - (lines or 200)), n, false),
+    '\n'
+  )
+end
+
+--- Whether terminal `buf` holds text of the user's that has not been sent:
+--- something typed there since Enter was last pressed, and still to be
+--- seen on its screen. Anything pasted now would run into that text, and
+--- Enter would send both as one message.
+---
+--- By what is on the screen, not by the keys alone: a key that answers a
+--- dialog is typed and gone, and so is text that was deleted again.
+---@return boolean
+function M.has_unsent(buf)
+  local list = runs[buf]
+  if not list or not vim.api.nvim_buf_is_valid(buf) then
+    return false
+  end
+  local screen
+  for _, run in ipairs(list) do
+    local text = vim.trim(run.text)
+    local n = vim.fn.strchars(text)
+    -- (Shorter than this it is on any screen somewhere.) Its end is what
+    -- is looked for: the start may be keys that went elsewhere.
+    if n >= 4 and wall_clock() - run.at < UNSENT_SECS then
+      screen = screen or tail_text(buf, 60)
+      if screen:find(vim.fn.strcharpart(text, math.max(0, n - 6)), 1, true) then
+        return true
+      end
+    end
+  end
+  return false
 end
 
 local function occurrences(haystack, needle)
@@ -550,6 +952,31 @@ local function occurrences(haystack, needle)
     end
     n, from = n + 1, e + 1
   end
+end
+
+-- What an input box puts around the text in it: its prompt mark and the
+-- lines of its frame.
+local FRAME =
+  { '│', '┃', '║', '|', '❯', '›', '»', '>', '▌', '▎', '█', '•', '●', '➜' }
+
+--- A line of a terminal without what frames it: the text an input box
+--- holds, when the line is one of an input box.
+---@return string
+function M._core(line)
+  local s = vim.trim(line)
+  local again = true
+  while again do
+    again = false
+    for _, mark in ipairs(FRAME) do
+      if s:sub(1, #mark) == mark then
+        s, again = vim.trim(s:sub(#mark + 1)), true
+      end
+      if #s >= #mark and s:sub(-#mark) == mark then
+        s, again = vim.trim(s:sub(1, #s - #mark)), true
+      end
+    end
+  end
+  return s
 end
 
 --- Paste `message` into the terminal `buf` and press Enter, once the
@@ -591,11 +1018,41 @@ function M.send(buf, message, done)
     return finished(...)
   end
   local body = message:gsub('\r\n?', '\n')
+  -- Nothing in it may end the paste early (the rest would be typed as keys)
+  -- or drive the terminal: no escape and no control character but the
+  -- line break and the tab.
+  body = body:gsub('\27%[20[01]~', ''):gsub('[%z\1-\8\11-\31\127]', '')
+  --- Blanks as a screen has them: a tab is shown as spaces.
+  local function flat(str)
+    return (str:gsub('[ \t]+', ' '))
+  end
   -- What to look for: the start of its first line, short enough to sit on
   -- one screen line of any input box.
-  local probe = vim.trim(text.clip(vim.trim(body:match('[^\n]*%S[^\n]*') or ''), 16))
+  local first = flat(vim.trim(body:match('[^\n]*%S[^\n]*') or ''))
+  local probe = vim.trim(text.clip(first, 16))
+  -- A very short text ("2", "yes") is on every screen somewhere: a dialog
+  -- with a countdown would seem to show it. It counts as shown only on a
+  -- line of its own, as an input box has it.
+  local short = vim.fn.strchars(first) <= 6
+  --- How often `tail` shows the text as an agent's input box would.
+  local function shown_in(tail)
+    tail = flat(tail)
+    if short then
+      local n = 0
+      for line in (tail .. '\n'):gmatch('([^\n]*)\n') do
+        if M._core(line) == first then
+          n = n + 1
+        end
+      end
+      return n
+    end
+    -- Not what the terminal itself echoes while its program is not reading
+    -- yet (an agent still starting): that echo shows the paste's own
+    -- brackets, `^[[200~`, which no input box does.
+    return occurrences(tail, probe) - occurrences(tail, '^[[200~' .. probe)
+  end
   local before = tail_text(buf)
-  local seen, folded = occurrences(before, probe), occurrences(before:lower(), 'pasted')
+  local seen, folded = shown_in(before), occurrences(before:lower(), 'pasted')
   -- Bracketed paste also keeps a multi-line message one message; without
   -- it each newline would submit what came before.
   if not pcall(vim.api.nvim_chan_send, chan, '\27[200~' .. body .. '\27[201~') then
@@ -618,9 +1075,7 @@ function M.send(buf, message, done)
     local now = tail_text(buf)
     -- A long paste is shown folded ("[Pasted text #1 +12 lines]") by every
     -- agent that folds them.
-    local shown = probe == ''
-      or occurrences(now, probe) > seen
-      or occurrences(now:lower(), 'pasted') > folded
+    local shown = probe == '' or shown_in(now) > seen or occurrences(now:lower(), 'pasted') > folded
     local waited = (vim.uv.hrtime() - started) / 1e6
     if shown then
       -- The input box needs a moment to take the text in before Enter.
@@ -681,37 +1136,52 @@ function M.setup()
   vim.api.nvim_create_autocmd('BufWipeout', {
     group = group,
     callback = function(ev)
+      -- A terminal wiped out by hand takes its agent with it. The job's own
+      -- exit is reported after this, to a terminal that is forgotten by
+      -- then: the chat is said to be over here.
+      local term = M.terms[ev.buf]
       M.terms[ev.buf] = nil
-      typed[ev.buf] = nil
+      typed[ev.buf], runs[ev.buf] = nil, nil
+      if term and term.owned and term.key then
+        vim.schedule(function()
+          local store = package.loaded['agent-chats.store']
+          if store and store.initialized then
+            store.exited(term.key)
+            store.refresh({})
+          end
+        end)
+      end
     end,
   })
-  -- Runs for every key, so it does as little as it can: only Enter and
-  -- printable keys count, and only while typing into a terminal.
+  -- Runs for every key, so it does as little as it can, and only while
+  -- typing into a terminal.
   vim.on_key(function(key, as_typed)
     local k = (as_typed and as_typed ~= '') and as_typed or key
-    if #k ~= 1 then
-      return
-    end
-    local b = k:byte()
-    if b ~= 13 and (b < 32 or b > 126) then
-      return
-    end
-    if vim.api.nvim_get_mode().mode ~= 't' then
+    if k == '' or vim.api.nvim_get_mode().mode ~= 't' then
       return
     end
     local buf = vim.api.nvim_get_current_buf()
-    if vim.bo[buf].buftype == 'terminal' then
+    if vim.bo[buf].buftype ~= 'terminal' then
+      return
+    end
+    -- Enter and printable keys are an answer to what the agent asked.
+    local b = k:byte()
+    if #k == 1 and (b == 13 or (b >= 32 and b <= 126)) then
       typed[buf] = wall_clock()
     end
+    M.note_key(buf, k)
   end, key_ns)
 end
 
 --- Forget every terminal (tests).
 function M.reset()
   M.terms = {}
+  backgrounds = {}
   typed = {}
+  runs = {}
   typing = {}
   nvim_focused = true
+  complained = false
 end
 
 return M

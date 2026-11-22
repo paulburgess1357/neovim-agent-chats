@@ -2,7 +2,28 @@
 
 local M = {}
 
-local strwidth = vim.fn.strdisplaywidth
+-- The cells a text takes, by the text alone. (`strdisplaywidth()` answers
+-- for the window the cursor is in, with its wrapping and its indent of
+-- wrapped lines: rows drawn while the cursor was in a conversation came
+-- out narrower than the list they were drawn for.)
+local strwidth = vim.api.nvim_strwidth
+
+--- The first line of `s` that says something; nil when none does. What a
+--- prompt of several lines is called by: its first line, not the start of
+--- its second run on behind it.
+---@param s string?
+---@return string?
+function M.first_line(s)
+  if type(s) ~= 'string' then
+    return nil
+  end
+  for line in s:sub(1, 4096):gmatch('[^\r\n]+') do
+    if line:find('%S') then
+      return vim.trim(line)
+    end
+  end
+  return nil
+end
 
 --- Collapse `s` to a single clean line, at most `max` cells wide (when given).
 ---@param s string?
@@ -35,16 +56,44 @@ function M.truncate(s, width)
   if strwidth(s) <= width then
     return s
   end
-  if width == 1 then
-    return '…'
+  -- (The ellipsis is two cells where 'ambiwidth' is "double".)
+  local dots = strwidth('…')
+  if width <= dots then
+    return width == dots and '…' or ''
   end
-  local n = math.min(vim.fn.strchars(s), width - 1)
+  local n = math.min(vim.fn.strchars(s), width - dots)
   local out = vim.fn.strcharpart(s, 0, n)
-  while n > 0 and strwidth(out) > width - 1 do
+  while n > 0 and strwidth(out) > width - dots do
     n = n - 1
     out = vim.fn.strcharpart(s, 0, n)
   end
   return out .. '…'
+end
+
+--- Cut `s` to `width` display cells from the left, keeping its end: for a
+--- path, whose last parts say the most.
+---@param s string
+---@param width integer
+---@return string
+function M.truncate_left(s, width)
+  if width <= 0 then
+    return ''
+  end
+  if strwidth(s) <= width then
+    return s
+  end
+  local dots = strwidth('…')
+  if width <= dots then
+    return width == dots and '…' or ''
+  end
+  local total = vim.fn.strchars(s)
+  local n = math.min(total, width - dots)
+  local out = vim.fn.strcharpart(s, total - n)
+  while n > 0 and strwidth(out) > width - dots do
+    n = n - 1
+    out = vim.fn.strcharpart(s, total - n)
+  end
+  return '…' .. out
 end
 
 --- Truncate, then pad on the right to exactly `width` cells.

@@ -51,11 +51,19 @@ function M.setup(opts)
   if cfg.watch.enabled then
     -- After startup, so the first screen is never held up.
     vim.defer_fn(watch, vim.v.vim_did_enter == 1 and 0 or 800)
+    return
+  end
+  -- Switched off by this call: a watcher an earlier one started stops,
+  -- unless the board is on screen (it looks for itself while it is).
+  local store = package.loaded['agent-chats.store']
+  local board = package.loaded['agent-chats.ui.board']
+  if store and store.is_watching() and not (board and board.is_open()) then
+    store.stop()
   end
 end
 
 --- Open the board (or go to it).
----@param opts { layout: string?, group_by: string?, filter: string? }?
+---@param opts { layout: string?, group_by: string?, search: string? }?
 function M.open(opts)
   wire()
   require('agent-chats.ui.board').open(opts)
@@ -78,11 +86,19 @@ function M.new(opts)
   require('agent-chats.actions').new(opts)
 end
 
---- Search inside every conversation (asks for the text when none is given).
+--- Search every chat, inside the conversations too (asks for the text
+--- when none is given).
 ---@param query string?
 function M.search(query)
   wire()
   require('agent-chats.actions').search(query)
+end
+
+--- Open the menu of what can be done with the chat under the cursor on the
+--- board (opening the board first when it is not).
+function M.menu()
+  wire()
+  require('agent-chats.ui.board').menu()
 end
 
 --- Jump into the next chat that needs you or has finished.
@@ -96,6 +112,16 @@ end
 function M.send(message)
   wire()
   require('agent-chats.actions').send(message)
+end
+
+--- Switch notifications on or off: `true`, `false`, or nil for the other
+--- way round. Returns what they are now. (The same switch as on the board:
+--- it holds in every Neovim, and after a restart.)
+---@param on boolean?
+---@return boolean
+function M.notify(on)
+  wire()
+  return require('agent-chats.notify').set(on)
 end
 
 --- Look for changes now.
@@ -153,10 +179,13 @@ function M.hooks(action, names)
   elseif action == 'show' then
     ui.show(names)
   elseif action == 'status' then
-    return (ui.report())
+    return (ui.report(names))
   else
     vim.notify(
-      ('Chats hooks: no such action "%s". Try: install, uninstall, show, status'):format(action),
+      ('%s: no such action "%s". Try: install, uninstall, show, status'):format(
+        require('agent-chats.config').command('hooks'):sub(2),
+        action
+      ),
       vim.log.levels.ERROR
     )
   end
@@ -201,14 +230,28 @@ local SUBCOMMANDS = {
   search = function(args)
     M.search(table.concat(args, ' '))
   end,
-  filter = function(args)
-    M.open({ filter = table.concat(args, ' ') })
+  menu = function()
+    M.menu()
   end,
   next = function()
     M.next()
   end,
   refresh = function()
     M.refresh()
+  end,
+  notify = function(args)
+    local word = args[1]
+    if word == nil then
+      return M.notify()
+    elseif word == 'on' or word == 'off' then
+      return M.notify(word == 'on')
+    end
+    vim.notify(
+      ('%s takes "on" or "off" (alone, it switches).'):format(
+        require('agent-chats.config').command('notify'):sub(2)
+      ),
+      vim.log.levels.ERROR
+    )
   end,
   send = function(args, opts)
     local message = #args > 0 and table.concat(args, ' ') or selection(opts)
@@ -239,7 +282,11 @@ function M.command(opts)
   local fn = SUBCOMMANDS[sub]
   if not fn then
     vim.notify(
-      ('Chats: no such subcommand "%s". Try: %s'):format(sub, table.concat(M.complete(''), ', ')),
+      ('%s: no such subcommand "%s". Try: %s'):format(
+        require('agent-chats.config').command():sub(2),
+        sub,
+        table.concat(M.complete(''), ', ')
+      ),
       vim.log.levels.ERROR
     )
     return
@@ -254,9 +301,20 @@ function M.complete(lead, line)
   -- (A range may end in a letter, as in `:'a,'bChats`: the name is looked
   -- for as it is, not as a word of its own.)
   local rest = line or ''
-  local _, stop = rest:find('Chats!?')
-  if stop then
-    rest = rest:sub(stop + 1)
+  -- Neovim knows where the name ends, also when it is cut short
+  -- (`:AgentC new`); what it cannot read yet is looked through by hand.
+  local ok, parsed = pcall(vim.api.nvim_parse_cmd, rest, {})
+  if ok and type(parsed) == 'table' and type(parsed.args) == 'table' then
+    local blank = rest:match('%s$') ~= nil
+    rest = table.concat(parsed.args, ' ')
+    if blank or rest == '' then
+      rest = rest .. ' '
+    end
+  else
+    local _, stop = rest:find('Chats!?')
+    if stop then
+      rest = rest:sub(stop + 1)
+    end
   end
   local words = vim.split(rest, '%s+', { trimempty = true })
   local past_sub = #words > 1 or (#words == 1 and rest:match('%s$') ~= nil)
@@ -272,6 +330,10 @@ function M.complete(lead, line)
     end
     if words[1] == 'new' then
       return agents(false)
+    elseif words[1] == 'notify' then
+      return vim.tbl_filter(function(a)
+        return #words < 2 and a:sub(1, #lead) == lead
+      end, { 'on', 'off' })
     elseif words[1] == 'hooks' then
       local past_action = #words > 2 or (#words == 2 and rest:match('%s$') ~= nil)
       if past_action then

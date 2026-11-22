@@ -441,7 +441,7 @@ describe('codex messages', function()
 end)
 
 describe('codex commands', function()
-  it('builds resume, new, fork and headless command lines', function()
+  it('builds resume, new and headless command lines', function()
     fx.home({
       providers = {
         codex = {
@@ -457,7 +457,6 @@ describe('codex commands', function()
       { 'codex', '--no-alt-screen', 'do it' },
       provider().new_cmd({ id = 'ignored', prompt = 'do it' })
     )
-    eq({ 'codex', '--no-alt-screen', 'fork', 'abc' }, provider().fork_cmd(chat))
     eq(
       { 'codex', '--no-alt-screen', 'exec', 'resume', '--skip-git-repo-check', 'abc', 'next step' },
       provider().headless_cmd(chat, 'next step')
@@ -602,5 +601,48 @@ describe('codex live', function()
     fake({ cwd = cwd, args = { 'app-server', '--listen', 'unix://' } })
     fake({ cwd = cwd, args = { '-c', 'x=1', 'mcp', 'list' } })
     eq(nil, provider().live(chats_of(a))[a.id])
+  end)
+
+  -- Found with Codex 0.171: it keeps `codex app-server --managed-daemon`
+  -- running, sessions live in it, and their hooks run under it. A chat
+  -- whose terminal had quit stayed "running outside this Neovim" for as
+  -- long as the daemon lived, and could not be resumed.
+  it('does not take the daemon its hooks ran under for the chat being open', function()
+    local home = fx.home()
+    local hk = require('helpers.hooks')
+    local store = require('agent-chats.store')
+    local cwd = T.tmpdir()
+    local a = home
+      :rollout({ cwd = cwd, start = os.time() - 120 })
+      :meta()
+      :task_started()
+      :item_user('a')
+      :write()
+    local daemon = fake({ args = { 'app-server', '--listen', 'unix://', '--managed-daemon' } })
+    -- (Reported after the daemon was born: an older report would be taken
+    -- for one about a process that has since given its number away.)
+    hk.event('codex', a.id, 'SessionStart', { src = 'startup', pid = daemon.pid })
+    hk.event('codex', a.id, 'UserPromptSubmit', { pid = daemon.pid })
+    hk.event('codex', a.id, 'Stop', { pid = daemon.pid })
+    store.refresh_sync()
+    store.refresh_sync({ full = false })
+    local c = store.get('codex:' .. a.id)
+    ok(c, 'the chat is listed')
+    ok(c.live ~= true, 'nothing has it open: the daemon is not the chat')
+    eq(nil, c.pid)
+    -- A terminal that has it open is still seen: a chat process, named by
+    -- `resume <id>`.
+    local tui = fake({ cwd = cwd, args = { 'resume', a.id } })
+    T.wait(3000, function()
+      store.refresh_sync()
+      local now = store.get('codex:' .. a.id)
+      return now.live == true and now.pid == tui.pid
+    end)
+    tui.stop()
+    T.wait(3000, function()
+      store.refresh_sync()
+      return store.get('codex:' .. a.id).live ~= true
+    end)
+    daemon.stop()
   end)
 end)

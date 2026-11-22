@@ -1,11 +1,15 @@
 -- A whole conversation as a read-only markdown buffer: your prompts and the
 -- agent's replies in full, tool calls folded to one line each. While the
 -- chat is running the buffer follows it.
+--
+-- (What an agent writes to disk is its transcript; what is read here, made
+-- from it, is the conversation.)
 
 local api = vim.api
 local async = require('agent-chats.util.async')
 local config = require('agent-chats.config')
 local display = require('agent-chats.display')
+local keys = require('agent-chats.keys')
 local providers = require('agent-chats.providers')
 local store = require('agent-chats.store')
 local text = require('agent-chats.util.text')
@@ -13,7 +17,7 @@ local time = require('agent-chats.util.time')
 
 local M = {}
 
----@class agent_chats.TranscriptState
+---@class agent_chats.ConversationState
 ---@field key string
 ---@field cursor any
 ---@field count integer         Messages read so far.
@@ -26,25 +30,26 @@ local M = {}
 ---@field tail integer          Lines at the end that are a remark; the next thing written replaces them.
 ---@field note string?          What that remark is.
 ---@field cursorless boolean?   The reader hands back the whole conversation every time.
----@field shown agent_chats.TranscriptItem[]?  For such a reader: what is drawn, in order.
+---@field shown agent_chats.ConversationItem[]?  For such a reader: what is drawn, in order.
 ---@field marks table[]?        ... and where each began, with the state to draw it again from there.
 ---@field mtime number?
 ---@field failed number?
 ---@field timer uv.uv_timer_t?
 ---@field loading boolean
+---@field fold_key string?      The key that opens and closes a tool call here, for the fold's own line.
 
----@class agent_chats.TranscriptItem
+---@class agent_chats.ConversationItem
 ---@field m agent_chats.Message
 ---@field index integer   Its place in the conversation (search hits name messages by it).
----@field results agent_chats.TranscriptItem[]?
+---@field results agent_chats.ConversationItem[]?
 
----@type table<integer, agent_chats.TranscriptState>
+---@type table<integer, agent_chats.ConversationState>
 local states = {}
 
 -- How often an open conversation is looked at again (tests shorten it).
 M._poll_ms = 1500
 
-local ns = api.nvim_create_namespace('agent-chats-transcript')
+local ns = api.nvim_create_namespace('agent-chats-conversation')
 
 local function fence_for(body)
   local longest = 2
@@ -73,9 +78,9 @@ end
 --- the second call.
 ---@param messages agent_chats.Message[]
 ---@param offset integer  Messages that came before these.
----@return agent_chats.TranscriptItem[]
+---@return agent_chats.ConversationItem[]
 local function arrange(messages, offset)
-  local shown_thinking = config.get().transcript.thinking
+  local shown_thinking = config.get().conversation.thinking
   -- `nameless`: calls of a reader that gives no ids, still waiting for a
   -- result. Their results come in the order of the calls.
   local seq, calls, nameless = {}, {}, {}
@@ -132,14 +137,14 @@ local function same(a, b)
 end
 
 --- Markdown lines for `items`, appended to what `st` already holds.
----@param st agent_chats.TranscriptState
----@param items agent_chats.TranscriptItem[]
+---@param st agent_chats.ConversationState
+---@param items agent_chats.ConversationItem[]
 ---@param label string  The agent's display name.
 ---@param base integer  Lines in the buffer before these.
 ---@param before integer?  For a reader without a cursor: items drawn before these.
 ---@return string[]
 function M.build(st, items, label, base, before)
-  local cfg = config.get().transcript
+  local cfg = config.get().conversation
   local out = {}
   local now = os.time()
   local function line(s, level)
@@ -156,6 +161,9 @@ function M.build(st, items, label, base, before)
       line('')
     end
   end
+  -- What can be folded carries the mark of an open group; closed, its fold
+  -- line shows the other one (see `foldtext`).
+  local mark = config.get().icons.expanded
   local function fenced(s, lang, level, max)
     local lines, omitted = text.head_lines(s, max or 100000)
     local fence = fence_for(s)
@@ -189,14 +197,14 @@ function M.build(st, items, label, base, before)
     elseif role == 'thinking' then
       if cfg.thinking and m.text and m.text ~= '' then
         st.open_tool = false
-        line('▸ Thinking', '>1')
+        line(mark .. ' Thinking', '>1')
         body(m.text, '1')
         line('', '0')
       end
     elseif role == 'tool' then
       heading('assistant', label, m.time)
       local what = call_label(m)
-      line('▸ ' .. what, '>1')
+      line(mark .. ' ' .. what, '>1')
       if m.input and m.input ~= '' then
         fenced(m.input, m.lang, '1', 200)
       end
@@ -241,16 +249,35 @@ end
 
 function M.foldtext()
   local first = vim.fn.getline(vim.v.foldstart)
-  return ('%s   (%d lines)'):format(first, vim.v.foldend - vim.v.foldstart + 1)
+  local st = states[api.nvim_get_current_buf()]
+  -- Closed, and marked as that (the line itself carries the open mark).
+  local icons = config.get().icons
+  if first:sub(1, #icons.expanded) == icons.expanded then
+    first = icons.collapsed .. first:sub(#icons.expanded + 1)
+  end
+  -- How much opening it shows: its lines without the fences around code,
+  -- which are not drawn.
+  local more = 0
+  for _, l in ipairs(vim.fn.getline(vim.v.foldstart + 1, vim.v.foldend)) do
+    if not l:match('^```+[%w_+-]*$') then
+      more = more + 1
+    end
+  end
+  -- The key that opens it, where the eye already is.
+  local how = st
+      and st.fold_key
+      and (', %s opens %s'):format(st.fold_key, more == 1 and 'it' or 'them')
+    or ''
+  return ('%s   (%d more line%s%s)'):format(first, more, more == 1 and '' or 's', how)
 end
 
 local function window_options(win)
   local wo = vim.wo[win]
   wo.foldmethod = 'expr'
-  wo.foldexpr = "v:lua.require'agent-chats.ui.transcript'.foldexpr()"
-  wo.foldtext = "v:lua.require'agent-chats.ui.transcript'.foldtext()"
+  wo.foldexpr = "v:lua.require'agent-chats.ui.conversation'.foldexpr()"
+  wo.foldtext = "v:lua.require'agent-chats.ui.conversation'.foldtext()"
   wo.foldenable = true
-  wo.foldlevel = config.get().transcript.fold_tools and 0 or 99
+  wo.foldlevel = config.get().conversation.fold_tools and 0 or 99
   wo.fillchars = 'eob: ,fold: '
 end
 
@@ -414,7 +441,7 @@ local function close(buf)
   states[buf] = nil
 end
 
---- Line of the `index`-th message in a transcript buffer.
+--- Line of the `index`-th message in a conversation buffer.
 function M.line_of(buf, index)
   local st = states[buf]
   return st and st.starts[index] or nil
@@ -459,7 +486,7 @@ function M.open(chat, opts)
   vim.bo[buf].buftype = 'nofile'
   vim.bo[buf].bufhidden = 'wipe'
   vim.bo[buf].swapfile = false
-  vim.bo[buf].filetype = 'agent-chats-transcript'
+  vim.bo[buf].filetype = 'agent-chats-conversation'
   pcall(api.nvim_buf_set_name, buf, ('Agent chat: %s [%d]'):format(display.title(chat, 40), buf))
   pcall(vim.treesitter.start, buf, 'markdown')
   api.nvim_buf_set_lines(buf, 0, -1, false, { 'Reading…' })
@@ -476,38 +503,181 @@ function M.open(chat, opts)
     loading = false,
   }
 
-  local win = board.pane_show(
-    buf,
-    'transcript',
-    'Conversation   q back · r reply · ]] [[ prompts · zR/zM unfold/fold tools'
-  )
+  local function leave()
+    board.release(buf)
+    pcall(api.nvim_buf_delete, buf, { force = true })
+    board.focus()
+  end
+  -- The same keys as on the list do the same things here, to this chat.
+  -- What is bound here is what this view's title and menu name.
+  local bound, left = {}, {}
+  local function bind(action, fn, desc)
+    bound[action], left[action] = keys.map(buf, 'n', action, fn, desc)
+    return bound[action]
+  end
+  -- In a text to be read, `/` is Vim's own search, with `n` and `N` behind
+  -- it: a long conversation is searched like any buffer. The search over
+  -- every chat keeps its other key here (unless `/` was given to it by
+  -- name in the options: then that is what was asked for).
+  local function bind_search(fn, desc)
+    if config.explicit('search') then
+      return bind('search', fn, desc)
+    end
+    local plan = keys.resolve('search', 'n', buf)
+    bound.search, left.search = {}, plan.left
+    for _, lhs in ipairs(plan.bound) do
+      if lhs ~= '/' and keys.set(buf, 'n', lhs, fn, desc, true) then
+        bound.search[#bound.search + 1] = lhs
+      end
+    end
+    return bound.search
+  end
+  --- The keys of an action in this view, for the menu opened from it.
+  local function keys_here(action)
+    if keys.shown(bound[action]) then
+      return bound[action], false
+    end
+    local yours = {}
+    for _, item in ipairs(left[action] or {}) do
+      yours[#yours + 1] = item.lhs
+    end
+    return yours, #yours > 0
+  end
+  local function next_prompt_here()
+    vim.fn.search('^## You', 'W')
+  end
+  local function prev_prompt_here()
+    vim.fn.search('^## You', 'bW')
+  end
+  local function fold_here()
+    if vim.fn.foldlevel('.') > 0 then
+      vim.cmd('normal! za')
+    else
+      vim.notify(
+        'The cursor is not on a tool call.',
+        vim.log.levels.INFO,
+        { title = 'Agent chats' }
+      )
+    end
+  end
+  --- The chat as it is now, for whatever acts on it from here.
+  local function ctx()
+    return {
+      chat = store.get(chat.key) or chat,
+      view = 'conversation',
+      back = leave,
+      keys = keys_here,
+      -- What has a key in this view (the menu lets each of them act).
+      actions = vim.tbl_keys(bound),
+      -- What this view does itself with a key of its own: chosen from the
+      -- menu, it happens here, not on the list.
+      run = { next_prompt = next_prompt_here, prev_prompt = prev_prompt_here, toggle = fold_here },
+    }
+  end
+  local back = bind('back', leave, 'back to the list')
+  local chat_actions = {
+    'queue',
+    'pass',
+    'diff',
+    'rename',
+    'pin',
+    'move',
+    'label',
+    'note',
+    'unread',
+    'archive',
+    'yank',
+    'new',
+    'search',
+  }
+  for _, action in ipairs(chat_actions) do
+    local function run()
+      board.run(action, ctx())
+    end
+    if action == 'search' then
+      bind_search(run, board.descriptions[action])
+    else
+      bind(action, run, board.descriptions[action])
+    end
+  end
+  local next_prompt = bind('next_prompt', next_prompt_here, 'next prompt')
+  local prev_prompt = bind('prev_prompt', prev_prompt_here, 'previous prompt')
+  local menu = bind('menu', function()
+    board.menu(ctx())
+  end, 'everything that can be done with this chat')
+  -- On a tool call, the keys that fold a group on the list open and close
+  -- the call. Anywhere else they do what they do in any buffer.
+  local function fold_or(lhs)
+    return function()
+      if vim.fn.foldlevel('.') > 0 then
+        vim.cmd('normal! za')
+      else
+        pcall(vim.cmd, 'normal! ' .. api.nvim_replace_termcodes(lhs, true, true, true))
+      end
+    end
+  end
+  local folds = {}
+  for _, action in ipairs({ 'toggle', 'open' }) do
+    for _, lhs in ipairs(keys.resolve(action, 'n', buf).bound) do
+      if
+        not lhs:lower():find('mouse', 1, true)
+        and keys.set(
+          buf,
+          'n',
+          lhs,
+          fold_or(lhs),
+          'open or close a tool call',
+          not config.explicit(action)
+        )
+      then
+        folds[#folds + 1] = lhs
+      end
+    end
+  end
+  states[buf].fold_key = keys.shown(folds)
+  -- For the menu opened from here: the key beside "open or close". (Not
+  -- Enter, which in a menu chooses the line it is on.)
+  bound.toggle = vim.tbl_filter(function(lhs)
+    return keys.canon(lhs) ~= keys.canon('<CR>')
+  end, folds)
+
+  -- The title names the keys this buffer has, as many as fit: the way back
+  -- first, the prompts last. It is asked again when keys change (one of
+  -- them gave way to a mapping of yours), so it never names one that is
+  -- not this view's any more.
+  local function title()
+    local hints = {}
+    local function still(list)
+      return keys.shown(keys.still(buf, 'n', list))
+    end
+    -- The fold lines name the key that opens them: the one that still does.
+    if states[buf] then
+      states[buf].fold_key = still(folds)
+    end
+    local function hint(list, word, rank)
+      local key = still(list)
+      if key then
+        hints[#hints + 1] = { key .. ' ' .. word, rank }
+      end
+    end
+    -- Closing the window is the way back whatever is mapped: with no key
+    -- for it, that is what the title says.
+    hints[1] = { (still(back) or ':q') .. ' back', 1 }
+    local down, up = still(next_prompt), still(prev_prompt)
+    if down and up then
+      hints[#hints + 1] = { ('%s %s prompts'):format(down, up), 4 }
+    end
+    hint(menu, 'menu', 2)
+    return { 'Conversation', hints }
+  end
+
+  local win = board.pane_show(buf, 'conversation', title)
   if not win then
     close(buf)
     pcall(api.nvim_buf_delete, buf, { force = true })
     return nil
   end
   window_options(win)
-
-  local function map(lhs, fn, desc)
-    vim.keymap.set('n', lhs, fn, { buffer = buf, nowait = true, silent = true, desc = desc })
-  end
-  map('q', function()
-    board.release(buf)
-    pcall(api.nvim_buf_delete, buf, { force = true })
-    board.focus()
-  end, 'Back to the list')
-  map('r', function()
-    local c = store.get(chat.key)
-    if c then
-      require('agent-chats.actions').reply(c)
-    end
-  end, 'Reply')
-  map(']]', function()
-    vim.fn.search('^## You', 'W')
-  end, 'Next prompt')
-  map('[[', function()
-    vim.fn.search('^## You', 'bW')
-  end, 'Previous prompt')
 
   api.nvim_create_autocmd('BufWipeout', {
     buffer = buf,

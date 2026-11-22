@@ -42,6 +42,7 @@
 --- What is known about a chat's running process.
 ---@class agent_chats.Live
 ---@field pid integer?
+---@field unsure boolean?         Which process runs it is a guess among several of its agent in one folder: nothing is typed into its terminal from the list.
 ---@field turn agent_chats.Turn?  Exact turn state, when the agent reports one.
 ---@field name string?            The agent's session name.
 ---@field name_explicit boolean?  The user chose that name.
@@ -146,6 +147,7 @@
 ---@field error boolean?       The tool reported failure (role "tool_result").
 ---@field id string?           Links a tool call to its result.
 ---@field time number?         Epoch seconds.
+---@field command boolean?     A command of the agent's own program that the user ran (`/exit`), not something said to the agent.
 
 ---@class agent_chats.Provider
 ---@field name string                 Short id: "claude".
@@ -193,7 +195,6 @@
 ---@field grep (fun(query: string): table<string, boolean>?)?
 ---@field resume_cmd fun(chat: agent_chats.Chat): string[]
 ---@field new_cmd fun(opts: { prompt: string?, id: string? }): string[]
----@field fork_cmd (fun(chat: agent_chats.Chat): string[])?
 ---@field headless_cmd (fun(chat: agent_chats.Chat, prompt: string): string[])?
 ---@field resume_prompt_cmd (fun(chat: agent_chats.Chat, prompt: string): string[])?
 

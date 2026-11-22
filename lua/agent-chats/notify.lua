@@ -38,6 +38,40 @@ local function desktop(title, body)
   end
 end
 
+--- Whether anything is announced at all: as it was last switched on the
+--- board, else as the `notify.enabled` option has it.
+---@return boolean
+function M.enabled()
+  local said = require('agent-chats.state').notify()
+  if said ~= nil then
+    return said
+  end
+  return config.get().notify.enabled ~= false
+end
+
+--- Switch notifications on or off (the other way round when `on` is nil),
+--- and say which it is now. Returns what it is.
+---@param on boolean?
+---@return boolean
+function M.set(on)
+  if on == nil then
+    on = not M.enabled()
+  end
+  require('agent-chats.state').set_notify(on)
+  vim.notify(
+    on and 'Notifications are on: you are told when a chat needs you or has finished.'
+      or 'Notifications are off. The board still shows what needs you.',
+    vim.log.levels.INFO,
+    { title = 'Agent chats' }
+  )
+  -- The board says which it is.
+  local store = package.loaded['agent-chats.store']
+  if store and store.touch then
+    store.touch()
+  end
+  return on
+end
+
 ---@class agent_chats.NotifyEvent
 ---@field kind "attention"|"done"
 ---@field chat agent_chats.Chat
@@ -73,7 +107,7 @@ function M.handle(ev)
     modeline = false,
     data = { key = chat.key, chat = chat },
   })
-  if not cfg.enabled or cfg[kind] == false then
+  if not M.enabled() or cfg[kind] == false then
     return nil
   end
   if kind == 'attention' and chat.inferred and not cfg.inferred then

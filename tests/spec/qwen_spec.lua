@@ -500,7 +500,7 @@ describe('qwen messages', function()
 end)
 
 describe('qwen commands', function()
-  it('builds resume, new, fork and headless command lines', function()
+  it('builds resume, new and headless command lines', function()
     fx.home({
       providers = {
         qwen = { cmd = { 'qwen', '-m', 'big' }, headless_args = { '--approval-mode', 'yolo' } },
@@ -513,7 +513,6 @@ describe('qwen commands', function()
       { 'qwen', '-m', 'big', '--session-id', 'id1', '-i', 'do it' },
       provider().new_cmd({ id = 'id1', prompt = 'do it' })
     )
-    eq({ 'qwen', '-m', 'big', '--resume', 'abc', '--fork-session' }, provider().fork_cmd(chat))
     eq(
       { 'qwen', '-m', 'big', '--resume', 'abc', '--approval-mode', 'yolo', 'next step' },
       provider().headless_cmd(chat, 'next step')

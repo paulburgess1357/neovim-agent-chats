@@ -6,6 +6,10 @@ CONTENTS                                                         *agent-chats*
   Introduction ............................... |agent-chats-introduction|
   Setup ...................................... |agent-chats-setup|
   The board .................................. |agent-chats-board|
+  Keys, and your own ......................... |agent-chats-keys|
+  Groups of your own ......................... |agent-chats-groups|
+  Searching, replying, starting chats ........ |agent-chats-use|
+  A chat's terminal .......................... |agent-chats-terminal|
   Commands ................................... |agent-chats-commands|
   Status hooks ............................... |agent-chats-hooks|
   Statuses ................................... |agent-chats-status|
@@ -18,8 +22,8 @@ CONTENTS                                                         *agent-chats*
 INTRODUCTION                                        *agent-chats-introduction*
 
 agent-chats.nvim lists every chat of Claude Code, Codex, Qwen Code and
-opencode in one place, shows which need you, and lets you open, reply to,
-search and start chats from Neovim.
+opencode in one place, shows which need you, and lets you go into, search
+and start chats from Neovim.
 
 It reads what the agents already write to disk and listens to what they
 report through their own hooks. It does not wrap how they are started, so
@@ -47,74 +51,325 @@ a guess.
 ==============================================================================
 THE BOARD                                                  *agent-chats-board*
 
-|:Chats| opens the board in its own tab: the list on the left, a pane on
-the right. The pane follows the cursor. For a chat running in a terminal of
-this Neovim it shows that live terminal; for any other chat it shows a
-summary (what it waits on or is doing, last prompt, last reply). The pane's
-title says which of the two it is.
+|:Chats| opens the board in its own tab: the list on the left, a pane on the
+right. Asked for again from anywhere, it comes to the front, and `q` on it
+leads back to where it was last asked for. The pane follows the cursor. For a
+chat running in a terminal of this Neovim it shows that live terminal; for any
+other chat it shows a summary: what state it is in and what it wants from you,
+the folder it works in, your first prompt, your last prompt and the last
+reply.
 
-Keys (all configurable through `keys`, see |agent-chats-options|):
+The bar above the list names what can be done with the row under the cursor,
+and the keys for it; when something cannot be done with a chat, it says why
+("it runs outside this Neovim", "its folder is gone"; in short on a narrow
+list: "runs elsewhere", "folder gone"), and says that before it names the less
+used keys. The first line of the list counts the chats and names the keys for
+the board as a whole.
 
-    <CR> / o    Open the chat: its terminal, resuming it if it ended
-    t           Read the whole conversation, tool calls folded
-    r           Reply
-    Q           Queue a reply for when the chat finishes its turn; with
-                replies queued, also send or drop them
-    n           New chat (agent, folder or new git worktree, first prompt)
-    F           Fork the chat into a new one
-    H           Hand the chat to another agent
-    d           Show uncommitted changes in the chat's folder
-    /           Filter the board: names, folders, branches, agents, labels,
-                latest messages
-    S           Search inside all conversations (starts from the filter)
-    <Esc>       Clear the filter, then the search
-    b           Group by status, folder, agent or worktree
+`?` opens the menu: everything else that can be done, in words. It is one
+list, all of it in view, in parts with a heading each: the chat under the
+cursor, your own marks on it (a name, a pin, a group, labels, a note), the
+list (a new chat, the search, how it is grouped) and the board (the pane, the
+status hooks, notifications). Move to a line and press <CR>, or click it. A
+line that has a key shows it, and the key works there too: a key of the board
+does in the menu what it does on the list, also when the menu does not list it
+for this row (it then says why not, as on the list). For a letter either case
+will do, unless the other case is a key of yours or of another action. (`q`
+and <Esc> close the menu, so an action whose key is one of those has the key
+after its words: "Close the board (q)" is what `q` does on the list.) Nothing
+has to be remembered.
+
+<CR> goes into the chat, to type: that is how a reply is written. One
+running in this Neovim is focused; one that
+ended is resumed in its own folder (the summary says which); one that runs
+somewhere else can only be read here, so its conversation opens.
+
+The first time the board opens, the pane introduces it (`board.intro`).
+
+==============================================================================
+KEYS, AND YOUR OWN                                          *agent-chats-keys*
+
+The board's own letters are capitals, so every lowercase key stays what it
+is everywhere else. The cursor passes over the lines that stand for nothing
+(the counts at the top, the gap between two groups): `gg` lands on the first
+heading and `G` on the last row.
+
+    <CR>        Go into the chat and type. On a heading: fold or unfold the
+                group
+    C           Read the whole conversation, tool calls folded
+    +           New chat: pick the agent, and it opens
+    S  or  /    Search every chat, inside the conversations too
+    ?  or  g?   The menu: everything else, for this row and for the board
+    q           Back: out of a conversation, a search, the board
+    <Esc>       End a search
     <Tab>       Fold a group, or show a chat's subagents
-    p           Show or hide the pane
-    u / U       Mark read or unread / mark everything read
-    P           Pin to the top of its group
-    a / A       Archive / show archived and older chats
-    l / e / R   Edit labels / edit the note / rename
-    y / Y       Copy the resume command / copy the id
-    ]a / [a     Next / previous chat that needs you
-    <C-f> <C-b> Scroll the pane
-    <C-r>       Refresh now
-    gh          Set up the agents' status hooks
-    g?          Show the keys
-    q           Close the board (terminals keep running)
 
-In a chat's terminal in the pane, `<C-\><C-b>` goes back to the list
-(`open.back_key`).
+A double click opens a chat and a right click opens the menu.
 
-In a conversation: `q` goes back to the list, `r` replies, `]]` and `[[`
-move between your prompts, and the usual fold commands open tool calls.
+In a conversation the same keys act on the chat being read: `q` goes back
+to the list, `+` and `S` start a chat and search as on the list, and `?`
+opens the menu for that chat, with the keys that work there. `]]` and `[[`
+(or `J` and `K`) move between your prompts. A tool call is folded to one
+line, which says how much it holds and how to open it: <Tab> or <CR> on that
+line, or the usual fold commands. `/` is Vim's own search there, with `n`
+and `N` behind it: a long conversation is searched like any buffer, and the
+search over every chat is on `S`.
 
-`/` narrows what is on the board as you type; it looks at what the rows
-already show. `S` reads the conversations themselves and lists the matching
-passages under their chats. A search starts from every chat, so it drops the
-filter; a filter typed afterwards narrows the results.
+Those are all the keys there are. The rest is in the menu, and has no key
+until you give it one in `keys`:
 
-Replying. `r` sends now: pasted into the chat's terminal when it runs in
-this Neovim, or by resuming the chat when it has ended (`reply.ended`). `Q`
-queues the reply behind the turn that is running, and it is pasted in when
-that turn ends.
+    For the chat            queue (a reply for when it finishes its turn),
+                            diff
+    To keep track of it     rename, pin, move (into a group of your own, or
+                            out of it), label, note, unread, archive, yank
+    For the list            group, show_all, read_all, next_attention,
+                            prev_attention
+    For the board           pane, refresh, hooks, notify
 
-A reply is pasted, never typed as keys, and Enter is pressed only once the
-terminal shows the text (`reply.echo_wait`). An agent that is showing a
-dialog of its own (trust this folder, update available, a permission
-prompt) does not take a paste: then nothing is sent and you are told. A
-chat that shows as "Needs you" is not pasted into at all; you are taken to
-it to answer first.
+Two more can be given keys and are not in the menu, because they only move
+what you see: scroll_down and scroll_up scroll the pane from the list.
 
-A queued reply is only ever pasted into a terminal of this Neovim that
-still has the chat in it, and never starts an agent by itself. If the chat
-ends first its replies are kept, you are told, and from then on they go
-only when you say so: `Q` on the chat sends them, carries on, or drops
-them. Opening the chat again does not send them. A reply you wrote and did
-not send is offered again the next time you reply to that chat.
+`q` is the one way back, everywhere. So is closing the window, however that
+is done: `:q` in a conversation goes back to the list just as `q` does. If
+the cursor ends up in the summary (a window command, a click), the keys of
+the list work there too, on the chat it shows, and `q` goes back to the
+list.
 
-A new chat that has not been sent a prompt is listed as "(no prompt yet)"
-until its agent names it, so a row always leads back to its terminal.
+In the floating layout the list and the pane are two floats, which Neovim's
+window commands know nothing of: on the board `<C-w>h`, `<C-w>l`, `<C-w>w` and
+`<C-w>p` move between the two as between two windows side by side. A key of
+your own that calls `:wincmd` leaves the floats for the window behind them,
+and that closes the floating board.
+
+                                                     *agent-chats-your-keys*
+Every key the board maps is local to its own windows, but a local mapping
+still hides a global one. So:
+
+- A default key is not bound where you have a mapping of your own on it.
+  If `S` is yours, the board searches with `/`; if `?` is yours, the menu
+  is on `g?`. The bar and the menu name the key that is bound, never one
+  that is not.
+- A key you name in the `keys` option is always bound: >lua
+    keys = { back = 'q' }
+< It is also that action's alone: an action that only had the key by
+  default loses it (`keys = { archive = 'C' }` leaves reading the
+  conversation without a key), and of two actions you give the same key the
+  first in the alphabet keeps it. You are told of both; `<cr>` and `<CR>`
+  are one key.
+- An action left without a key is still in the menu and in `:Chats menu`.
+  The menu marks a key that was left to you with `*`, and
+  `:checkhealth agent-chats` lists every such key and what does its work
+  instead.
+
+This holds on the list, in a conversation and in a chat's terminal. The
+keys are worked out when the board opens and again each time the list gets
+the cursor, and a default key that a mapping of yours has turned up on
+since (a plugin that loads late) gives way at the first press: your mapping
+runs, and the bar stops naming the key. `setup()` called again takes effect
+on the list and the summary at once; a conversation or a chat's terminal
+that is already open keeps the keys it was opened with, and names those.
+
+Neovim's own default mappings, and a key you mapped to <Nop>, do not count
+as yours. A longer mapping of yours that merely begins with one of these
+keys is not counted either: on the board the short key acts at once,
+without waiting for more, so the longer one is out of reach there when
+typed by hand.
+
+The pop-up boxes (a reply to be queued, the menu) are the plugin's own
+windows, open only until you send or close them, and their keys are fixed: the
+footer of each names them.
+
+==============================================================================
+GROUPS OF YOUR OWN                                        *agent-chats-groups*
+
+The list is grouped by what each chat is doing. A chat can be taken out of
+that and put in a group you name: "Put it in a group of your own" in the menu
+asks which one (the groups there are, or a new one; the first time, only the
+name). >
+
+    ▾ Release  2   ●1
+     ●  Claude  Review the release checklist ↗    plan            2m
+     ·  Codex   Explain the borrow checker error  engine          2h
+
+    ▾ Working  1   in the middle of a turn
+     ◐  Codex   Add a picker for tab pages ↗      nvim-config     1m
+<
+Your groups are headings of their own above the others, by name. A chat stays
+in its group whatever it does: its mark still says whether it needs you, is
+working or has ended, and what needs you comes first in the group. The heading
+says how many of its chats want a look, also while it is folded, and the
+counts on the first line include them. A chat in a group is not dropped from
+the list for being old (`board.max_age_days`).
+
+"Move it out of ..., or to another group" on a chat that is in one offers the
+other groups, a new one, and "No group": it is then back where its status puts
+it. A group is nothing but its chats: it is made by naming it, and it is gone
+when the last chat has left it.
+
+A search finds a chat by the name of its group, and its summary shows it
+("Group   Release"). Your groups belong to the grouping by status: grouped by
+folder, agent or worktree, the list shows those and nothing else, and you are
+told so when you move a chat there.
+
+==============================================================================
+SEARCHING, REPLYING, STARTING CHATS                          *agent-chats-use*
+
+Searching. There is one search. `S` asks for the text and narrows the list
+while you type, from what each row shows and holds (names, folders, branches,
+agents, labels, notes, your groups, your first and last prompt, the last
+reply). When you pause
+(`search.live`), and when you press <CR>, the conversations themselves are
+read for the same text and the passages found are listed under their chats;
+<CR> on a passage opens the conversation there, and `C` on the chat's own row
+opens it at the first of them. What is read is what a conversation shows: your
+prompts, the replies, and the line each tool call has ("Bash · make test");
+what a call was given and what it returned as well with `search.tools`. Words
+are looked for in any order in a row; inside conversations the text is looked
+for as typed, ignoring case unless it has a capital. Archived chats are found
+too. What was searched for is marked where a row shows it, so a chat found by
+its folder shows why. While you type, the first line names the keys of the
+prompt (<CR> keeps the search, <Esc> calls it off); afterwards `q` (or <Esc>)
+ends the search, and `S` asks for another text (the prompt starts empty; <Up>
+brings back the last one).
+
+Replying. To reply, press <CR> and type: you are in the chat's own terminal,
+with everything its agent offers. A chat that had ended is resumed first, in
+its folder. There is no box to write a reply in, and no key for it.
+
+A reply can also wait. The menu of a chat that is in the middle of a turn has
+"Queue a reply for when it finishes its turn": it opens a box, and what is
+written there is pasted into the chat's terminal when that turn ends. With
+replies queued the row shows how many (»2), its summary shows them, and the
+menu line reads "Queued replies (2): send, add or drop". (`keys.queue` gives
+this a key. The key then works on any chat: on one that is not busy and has
+nothing queued there is nothing to wait for, so it sends at once, and the
+title of the box says which it will be.)
+
+Nothing can be sent from here to a chat that runs outside this Neovim, or to
+one whose folder is gone: no reply can be queued for such a chat, and replies
+queued for it earlier can only be dropped. A reply sent to a chat
+that has ended resumes it (`reply.ended`: in a terminal, or in the background,
+where it runs with no terminal at all; while a background reply is being
+answered the chat can be read and nothing else, and the board says so).
+
+What is sent from the list (a queued reply, lines sent with `:Chats send`) is
+pasted, never typed as keys, and Enter is pressed only once the terminal shows
+the text (`reply.echo_wait`). An agent that is showing a dialog of its own
+(trust this folder, update available, a permission prompt) does not take a
+paste: then nothing is sent and you are told. A chat that shows as "Needs you"
+is not pasted into at all; you are taken to it to answer first.
+
+A queued reply is only ever pasted into a terminal of this Neovim that still
+has the chat in it, and never starts an agent by itself. If the chat ends
+first its replies are kept, you are told, and from then on they go only when
+you say so: "Queued replies" in the chat's menu sends them, adds to them, or
+drops them. Opening the chat again does not send them. The summary of a chat
+with replies queued says which of the two holds.
+
+It waits while the terminal holds something you typed and have not sent:
+pasted behind a half-written line, the two would go as one message. You are
+told once, and it goes when your line has been sent or cleared.
+
+Nothing is typed into a terminal that the agent is not reading. An agent
+started by hand in a shell and then suspended (CTRL-Z) has left the shell
+reading, and what is pasted there would be run as commands: the board says so
+and sends nothing.
+
+What was written in the box and not sent (the box was closed, the chat did not
+take it, the agent resumed for it exited at once, a background run failed) is
+in the box again the next time. What was written for a chat while its row was
+still a stand-in for it, a draft or a queued reply, goes with the chat when
+its agent has named it.
+
+Notifications. When a chat needs you or finishes a turn, you are told
+(|agent-chats-options|, `notify`). The menu switches all of it off and on
+again: "Turn notifications off" is its last line but one, so from where the
+menu opens `k` twice leads to it (the menu goes round), and <CR> switches.
+While they are off, the first line of the list says "notifications off"; while
+they are on, it says nothing. It is one switch for every Neovim, and it is
+kept when Neovim is closed. `:Chats notify`, `:Chats notify on` and `:Chats
+notify off` do the same from anywhere, and `keys.notify` gives it a key. The
+board itself goes on showing what needs you either way.
+
+Starting a chat. `+` asks one thing: which agent. The question names the
+folder the chat will start in (the one Neovim is in), and the agent used last
+is its first line, so `+` and <CR> start another chat with it. The last line
+leads to another folder: one used lately, a new git worktree of the repository
+that folder is in (if it is in one), or any other. Then the agent's own
+terminal opens and you are typing in it. What to say to it first, which model
+it runs and everything else about it is chosen there, in the agent itself: the
+board asks nothing more. `:Chats new claude` starts that agent without asking.
+(What it is started with is `providers.<name>.cmd`.)
+
+A new chat has a row from the start, so one always leads back to its terminal.
+Until its agent has named it, the row says "(no prompt yet)". The cursor of
+the list goes to the new row, so going back lands on the chat just started.
+
+Passing a chat on to another agent is switched off. It is on no key and in no
+menu until you give it a key: >lua
+    keys = { pass = 'P' }
+<With one, `P` asks for the agent, then shows the notes it will be started
+with, to read and change before they go. The notes are not the whole
+conversation: they hold the task's name, the folder and branch, your first
+prompt, and the last eight messages of the conversation as they were said
+(yours and the agent's; no tool calls or their output), each cut to a
+paragraph or two, with a count of the earlier ones left out. The new chat
+starts in the same folder, so its agent can look at the files and at git for
+the rest, and with that agent's own command (`providers.<name>.cmd`): whatever
+model that gives it. Its row shows the first line of the notes, which names
+the task ("Taking over “Fix the parser” from Claude"), until the agent has
+named the chat. If the agent does not start (it is not installed, it exits as
+soon as it is started, the notes are longer than a program can be given when
+it starts, about 127 KB), you are told why, and the notes are in the box the
+next time.
+
+Folders. A chat belongs to the folder it was started in, and its agent is
+always started there: when a chat that ended is opened, or sent a reply that
+was queued. Neovim's own folder makes no difference, and neither does a `cd`
+the agent did along the way. The folder is in the chat's summary, on its row
+when the list is wide enough, and in the title of its terminal. A chat whose
+folder no longer exists cannot be resumed; it can be read (and, where passing
+on has a key, passed on to a new chat in a folder you choose).
+
+==============================================================================
+A CHAT'S TERMINAL                                       *agent-chats-terminal*
+
+While you type in a chat every plain key belongs to the agent. `<C-\><C-b>`
+(`open.back_key`) goes back to the list; in the terminal's normal mode `q`
+does. The title of the pane names the chat, its folder and the key that
+goes back in the mode you are in. Closing the window (`:q`) goes back as
+well, and is what the title names when no key is bound. A chat that is open
+in a terminal here is listed as open ("Idle" or busier) from the moment its
+terminal exists, never as "Ended".
+
+`open.on_open` is called once for every terminal the plugin starts for a
+chat, after the plugin has set its own keys, with the buffer and (when
+known) the chat. What it maps is left alone. A terminal you made yourself (a
+chat started by hand in a `:terminal`, or one from `open.where`) only gets
+the key that goes back while typing.
+
+If your function maps a key of its own on top of one of the two that go
+back, the title stops naming that key: the plugin cannot know what yours
+does. To have it named, return `{ back = 'q' }` for the key that goes back
+in normal mode and `{ back_typing = '<C-x>' }` for the one while typing
+(`require('agent-chats').open()` is what goes back). A key is named only if
+something of yours is mapped on it there.
+
+To have window keys that work while typing: >lua
+    require('agent-chats').setup({
+      open = {
+        on_open = function(buf)
+          for _, dir in ipairs({ 'h', 'j', 'k', 'l' }) do
+            vim.keymap.set('t', '<C-' .. dir .. '>',
+              [[<C-\><C-n><C-w>]] .. dir, { buffer = buf })
+          end
+        end,
+      },
+    })
+<
+                                                        *AgentChatsTerminal*
+The same moment is the `User` event `AgentChatsTerminal`, with `data.buf`,
+`data.key` and `data.chat`.
 
 ==============================================================================
 COMMANDS                                                *agent-chats-commands*
@@ -123,8 +378,11 @@ COMMANDS                                                *agent-chats-commands*
 :Chats                  Open the board, or go to it.
 :Chats new [agent]      Start a new chat.
 :Chats next             Jump into the chat that has waited for you longest.
-:Chats search [text]    Search inside all conversations.
-:Chats filter {text}    Open the board filtered.
+:Chats search [text]    Search every chat; asks for the text when none is
+                        given.
+:Chats menu             The menu for the chat under the cursor on the board.
+:Chats notify [on|off]  Switch notifications on or off; alone, the other way
+                        round.
 :[range]Chats send      Send the lines, with file name and line range, to a
                         chat running in this Neovim.
 :Chats hooks            Overview of the status hooks, with keys to install
@@ -139,16 +397,19 @@ COMMANDS                                                *agent-chats-commands*
 :Chats hooks status     One line per agent.
 :Chats refresh          Look for changes now.
 :Chats close            Close the board.
+:Chats toggle           Open the board; close it when the cursor is in it.
 :Chats health           Run `:checkhealth agent-chats`.
 
-`:AgentChats` is the same command under a second name.
+`:AgentChats` is the same command under a second name. Where another plugin
+already owns `:Chats`, that is the name this plugin's hints use, and what
+`<Plug>(agent-chats-send)` runs.
 
 Mappings to bind yourself:
 
     <Plug>(agent-chats)          Toggle the board
     <Plug>(agent-chats-next)     Next chat that needs you
     <Plug>(agent-chats-new)      New chat
-    <Plug>(agent-chats-search)   Search conversations
+    <Plug>(agent-chats-search)   Search chats
     <Plug>(agent-chats-send)     Send the selection to a chat (visual mode)
 
 ==============================================================================
@@ -212,7 +473,8 @@ STATUSES                                                  *agent-chats-status*
 
     Needs you       The agent is blocked on you (permission, a question)
     Working         The agent is mid-turn
-    Done, unread    The turn finished and you have not looked since
+    Unread          The turn finished and you have not looked since (its
+                    terminal live in the pane beside the list is looking)
     Idle            Finished, seen, the agent is still open
     Ended           No process has the chat open; it can be resumed
 
@@ -233,7 +495,7 @@ terminal of this Neovim typing into the terminal counts as the answer), and,
 for Claude Code and Qwen Code, that you interrupted a turn (the transcript
 says so, and wins when it shows the turn over after the hooks last spoke).
 
-The pane says where a running chat's status comes from, and
+The summary says where a running chat's status comes from, and
 `:checkhealth agent-chats` says it per agent.
 
 ==============================================================================
@@ -241,27 +503,29 @@ OPTIONS                                                  *agent-chats-options*
 
 Pass any of these to `setup()`; the values shown are the defaults.
 >lua
-    {
+    require('agent-chats').setup({
       providers = {
-        claude   = { enabled = true, cmd = { 'claude' },   home = nil, headless_args = {} },
-        codex    = { enabled = true, cmd = { 'codex' },    home = nil, headless_args = {} },
-        qwen     = { enabled = true, cmd = { 'qwen' },     home = nil, headless_args = {} },
+        claude = { enabled = true, cmd = { 'claude' }, home = nil, headless_args = {} },
+        codex = { enabled = true, cmd = { 'codex' }, home = nil, headless_args = {} },
+        qwen = { enabled = true, cmd = { 'qwen' }, home = nil, headless_args = {} },
         opencode = { enabled = true, cmd = { 'opencode' }, home = nil, headless_args = {} },
       },
       board = {
         layout = 'tab',         -- 'tab' | 'float' | 'current'
         width = 0.92, height = 0.88, border = nil,   -- float
         pane = true, pane_size = 0.5,
-        group_by = 'status',    -- 'status' | 'folder' | 'provider' | 'worktree'
+        group_by = 'status',    -- 'status' | 'folder' | 'agent' | 'worktree'
         max_age_days = 30,      -- 0 shows everything
         max_per_group = 40,
         spinner = true,
+        intro = true,           -- introduce the board the first time it opens
       },
       open = {
         where = 'pane',         -- 'pane' | 'vsplit' | 'split' | 'tab' | 'float'
                                 -- | 'current' | function(ctx) -> buffer
         size = 0.4, start_insert = true, close_on_exit = true, reuse = true,
         back_key = '<C-\\><C-b>',
+        on_open = nil,          -- function(buf, chat)
       },
       status = { stall_after = 30, working_timeout = 900 },
       hooks = { enabled = true, dir = nil, script = nil, remind = true },
@@ -271,11 +535,35 @@ Pass any of these to `setup()`; the values shown are the defaults.
                  scope = 'all', desktop = false, handler = nil },
       reply = { ended = 'ask', paste_delay = 120, echo_wait = 2000 },
       worktree = { path = '{parent}/{repo}.worktrees/{name}', base = nil },
-      transcript = { tool_output_lines = 30, thinking = false, fold_tools = true },
-      search = { max_hits = 5, tools = false },
+      conversation = { tool_output_lines = 30, thinking = false, fold_tools = true },
+      search = { live = true, max_hits = 5, tools = false },
       diff = nil, state_file = nil, cache_file = nil,
-      icons = { ... }, keys = { ... },
-    }
+      icons = {
+        attention = '●', working = '◐', done = '✓', idle = '○', ended = '·',
+        inferred = '?',
+        spinner = { '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏' },
+        pin = '★', note = '✎', queue = '»', sub = '└',
+        collapsed = '▸', expanded = '▾', dirty = '±', elsewhere = '↗',
+        providers = {},
+      },
+      keys = {
+        open = { '<CR>', '<2-LeftMouse>' },
+        read = 'C', new = '+',
+        search = { 'S', '/' },
+        menu = { '?', 'g?', '<RightMouse>' },
+        back = 'q', clear = '<Esc>', toggle = '<Tab>',
+        next_prompt = { ']]', 'J' }, prev_prompt = { '[[', 'K' },
+        -- No key by default; in the menu (all but the two that scroll).
+        queue = false, move = false, notify = false,
+        diff = false, rename = false, pin = false, label = false, note = false,
+        unread = false, archive = false, yank = false, group = false,
+        pane = false, show_all = false, read_all = false,
+        next_attention = false, prev_attention = false,
+        scroll_down = false, scroll_up = false, refresh = false, hooks = false,
+        -- Switched off: in no menu and on no key until it is given one.
+        pass = false,
+      },
+    })
 <
 `providers.<name>.cmd` is how the agent is started; add flags there rather
 than relying on a shell alias. `headless_args` are added to background
@@ -290,17 +578,23 @@ changing either, install again (the status says "outdated" until then).
 guess.
 
 `open.where` as a function receives `{ argv, cmdline, cwd, env, title,
-chat }`, opens a terminal and returns its buffer.
+chat }`, opens a terminal and returns its buffer. `open.on_open` is for
+your own setup of a chat's terminal (|agent-chats-terminal|).
 
 `notify.scope` limits notifications to chats under the working directory
 ("cwd") or to chats running in this Neovim ("hosted").
 
-`keys` maps action names to a key, a list of keys, or false. The action
-names are those of |agent-chats-board|: open, transcript, pane, reply,
-queue, new, fork, handoff, diff, filter, search, clear, group, toggle,
-unread, read_all, pin, archive, show_all, label, note, rename, yank,
-yank_id, next_attention, prev_attention, scroll_down, scroll_up, refresh,
-hooks, help, close.
+`search.live = false` reads the conversations only when <CR> is pressed,
+not while the text is typed.
+
+`keys` maps action names to a key, a list of keys, or false. A default
+gives way to a mapping of yours on the same key; a key set here never does
+(|agent-chats-your-keys|).
+
+Options written for an earlier version are still read: `transcript` is
+`conversation`, `group_by = 'provider'` is 'agent', and the key actions
+transcript, handoff, filter, help and close are read, pass, search, menu
+and back.
 
 Highlight groups start with `AgentChats` and link to standard groups.
 
@@ -308,12 +602,13 @@ Highlight groups start with `AgentChats` and link to standard groups.
 LUA API                                                      *agent-chats-api*
 
     require('agent-chats').setup({opts})
-    require('agent-chats').open({opts})     -- { layout, group_by, filter }
+    require('agent-chats').open({opts})     -- { layout, group_by, search }
     require('agent-chats').close()
     require('agent-chats').toggle()
     require('agent-chats').new({opts})      -- { provider, cwd, prompt }
     require('agent-chats').next()
     require('agent-chats').search({text})
+    require('agent-chats').menu()
     require('agent-chats').send({text})
     require('agent-chats').refresh()
     require('agent-chats').hooks({action}, {names})
@@ -322,8 +617,9 @@ LUA API                                                      *agent-chats-api*
     require('agent-chats').chats()          -- every chat in the index
     require('agent-chats').register({provider})
 
-User autocommands: `AgentChatsUpdate`, and `AgentChatsAttention` /
-`AgentChatsDone` with `data.key` and `data.chat`.
+User autocommands: `AgentChatsUpdate`; `AgentChatsAttention` and
+`AgentChatsDone` with `data.key` and `data.chat`; and |AgentChatsTerminal|
+with `data.buf`, `data.key` and `data.chat`.
 
 ==============================================================================
 ADDING AN AGENT                                        *agent-chats-providers*
@@ -378,7 +674,7 @@ any of them:
     rev(id)         A value that changes when something about the chat
                     changed outside its transcript (a title kept elsewhere).
     check()         Extra lines for `:checkhealth`.
-    fork_cmd(chat), headless_cmd(chat, prompt), resume_prompt_cmd(chat, prompt)
+    headless_cmd(chat, prompt), resume_prompt_cmd(chat, prompt)
     exact           `live()` reports the turn state itself.
     preassign_id    `new_cmd` honours `opts.id`.
 
@@ -392,13 +688,25 @@ LIMITS                                                    *agent-chats-limits*
 - A chat running outside this Neovim can be read but not typed into.
 - Background replies cannot answer permission prompts.
 - Queued replies are pasted into a terminal of this Neovim, or not sent: a
-  chat that ended keeps its queue until you send or drop it with `Q`.
+  chat that ended keeps its queue until you send or drop it from its menu.
 - A dialog an agent shows is only known when the agent reports it. For any
   other (an update offer, a trust question) a reply is not sent, because
   the pasted text does not appear; you are told to look.
 - Codex and opencode keep no record of running sessions; which process has
   which chat open is matched from process inspection, and from the process
-  a session's hook ran under once hooks are installed.
+  a session's hook ran under once hooks are installed. (Codex 0.171 keeps a
+  daemon, `codex app-server`, that holds every session and runs their
+  hooks: it being alive is not taken for a chat being open.)
+- Two opencode processes in one folder, without its hooks, can only be told
+  apart by a guess. A process started with a prompt is matched to the chat
+  that begins with that prompt; beyond that there is the folder and the time.
+  The guess is still made, so that each row leads to a terminal, but nothing
+  is typed on it: queueing a reply for such a chat says why, and the reply is
+  written in its terminal. With the hooks installed, opencode says which
+  process has which chat.
+- A prompt is handed to an agent as an argument when it starts, and an
+  argument can hold about 127 KB. A longer first prompt, or longer notes for a
+  chat that is passed on, are refused with that reason and kept in the box.
 - After you approve a prompt, no agent reports it; see |agent-chats-status|.
 - Developed and tested on Linux. The path for systems without /proc is
   exercised by the tests but has not run on a Mac. Windows is untested and

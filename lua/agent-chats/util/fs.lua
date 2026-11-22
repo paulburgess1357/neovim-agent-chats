@@ -259,6 +259,16 @@ function M.write_atomic(path, data, mode)
   return true
 end
 
+--- `path` as it is said where room is short (a title, a line of a menu):
+--- with `~` for the home folder, and its start left out when it is longer
+--- than `max` cells. The end of a path says the most.
+---@param path string?
+---@param max integer
+---@return string
+function M.short(path, max)
+  return require('agent-chats.util.text').truncate_left(M.tilde(path), max)
+end
+
 --- `~/x` for paths under the home directory.
 function M.tilde(path)
   if not path or path == '' then

@@ -804,6 +804,14 @@ M.hooks = {
     Interrupt = 'aborted',
   },
   process = { codex = true },
+  -- Newer versions of Codex keep `codex app-server` running as a daemon
+  -- that holds the sessions of every terminal, and a session's hooks run
+  -- under it. That process being alive says nothing about a chat being
+  -- open anywhere: only a process that is itself a chat does.
+  holds = function(pid)
+    local args = codex_args(proc.argv(pid) or {})
+    return args ~= nil and is_chat(args)
+  end,
   config = function()
     return {
       kind = 'json',
@@ -1065,10 +1073,9 @@ end
 -- Commands
 -----------------------------------------------------------------------------
 
--- A prompt that starts with a dash would be read as an option.
-local function arg(prompt)
-  return prompt:sub(1, 1) == '-' and (' ' .. prompt) or prompt
-end
+-- A prompt that the program could take for an option or a command of its
+-- own is kept from that (see `common.arg`).
+local arg = common.arg
 
 function M.resume_cmd(chat)
   return common.cmd('codex', 'resume', chat.id)
@@ -1080,10 +1087,6 @@ function M.new_cmd(opts)
     args[#args + 1] = arg(opts.prompt)
   end
   return common.cmd('codex', args)
-end
-
-function M.fork_cmd(chat)
-  return common.cmd('codex', 'fork', chat.id)
 end
 
 function M.headless_cmd(chat, prompt)

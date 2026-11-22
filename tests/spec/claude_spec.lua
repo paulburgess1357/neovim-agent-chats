@@ -426,7 +426,7 @@ describe('claude messages', function()
 end)
 
 describe('claude commands', function()
-  it('builds resume, new, fork and headless command lines', function()
+  it('builds resume, new and headless command lines', function()
     fx.home({
       providers = {
         claude = {
@@ -441,10 +441,6 @@ describe('claude commands', function()
     eq(
       { 'claude', '--model', 'opus', '--session-id', 'id1', 'do it' },
       provider().new_cmd({ id = 'id1', prompt = 'do it' })
-    )
-    eq(
-      { 'claude', '--model', 'opus', '--resume', 'abc', '--fork-session' },
-      provider().fork_cmd(chat)
     )
     eq({
       'claude',

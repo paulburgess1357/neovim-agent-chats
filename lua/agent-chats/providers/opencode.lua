@@ -160,8 +160,15 @@ local seen
 local HOT_SECS = 3600
 local CHUNK = 40
 
+-- The process each session was last seen running in, and when each
+-- process was last seen. A session whose process is gone, and which has
+-- not moved since, is not taken for the chat of another process.
+local owners = {} ---@type table<string, integer>
+local seen_at = {} ---@type table<integer, integer>
+
 function M._reset()
   seen = nil
+  owners, seen_at = {}, {}
 end
 
 local function signature(path)
@@ -632,9 +639,14 @@ local function read_argv(argv)
     if key then
       if key == '--session' or key == '-s' then
         out.session = val
+      elseif key == '--prompt' then
+        out.prompt = val
       end
     elseif a == '-s' or a == '--session' then
       out.session = argv[i + 1]
+      i = i + 1
+    elseif a == '--prompt' then
+      out.prompt = argv[i + 1]
       i = i + 1
     elseif a == '--fork' then
       out.fork = true
@@ -680,45 +692,189 @@ function M.live(chats, reported)
     end
   end
 
-  -- No id on the command line: the most recently updated chat in the
-  -- process's folder. Where the start time is known (Linux), a chat last
-  -- touched before the process began is not it, unless it was `--continue`d.
-  for _, u in ipairs(unplaced) do
-    local dirs = {}
-    if u.cwd then
-      dirs[u.cwd] = true
-      local project = u.args.command
-      if project and project ~= 'run' then
-        local dir =
-          vim.fs.normalize(project:sub(1, 1) == '/' and project or (u.cwd .. '/' .. project))
-        if fs.is_dir(dir) then
-          dirs[dir] = true
-        end
-      end
-    end
-    local started = not u.args.continue and proc.start_time(u.pid) or nil
-    local best, best_at
-    for id, chat in pairs(chats) do
-      if not out[id] and not chat.parent_id and chat.cwd and dirs[chat.cwd] then
-        local at = chat.updated or chat.mtime or 0
-        if (not started or at >= started - 5) and (not best_at or at > best_at) then
-          best, best_at = id, at
-        end
-      end
-    end
-    if best then
-      out[best] = { pid = u.pid, cwd = u.cwd }
-    end
-  end
-
   -- A session whose plugin events name one of these processes runs in it,
-  -- unless that process is younger than the event.
+  -- unless that process is younger than the event. This is the agent
+  -- saying so itself: it comes before any guess.
+  local named = {} ---@type table<integer, boolean>
   for id, said in pairs(reported or {}) do
     if not out[id] and chats[id] and said.pid and pids[said.pid] and not said.ended then
       local born = proc.start_time(said.pid)
       if not (born and said.pid_at and born > said.pid_at + 2) then
         out[id] = { pid = said.pid, cwd = proc.cwd(said.pid) }
+        named[said.pid] = true
       end
+    end
+  end
+
+  -- No id on the command line and no word from the agent. What is left to
+  -- go by is the folder, the time, and the prompt a process was started
+  -- with. Two processes in one folder must never both be given the chat
+  -- that moved last: the terminals of two chats would be crossed, and a
+  -- reply typed into the wrong one.
+  local now = os.time()
+  local guessing = {}
+  for _, u in ipairs(unplaced) do
+    if not named[u.pid] then
+      u.dirs = {}
+      if u.cwd then
+        u.dirs[u.cwd] = true
+        local project = u.args.command
+        if project and project ~= 'run' then
+          local dir =
+            vim.fs.normalize(project:sub(1, 1) == '/' and project or (u.cwd .. '/' .. project))
+          if fs.is_dir(dir) then
+            u.dirs[dir] = true
+          end
+        end
+      end
+      -- Where the start time is known (Linux), a chat last touched before
+      -- the process began is not it, unless it was `--continue`d.
+      u.started = not u.args.continue and proc.start_time(u.pid) or nil
+      guessing[#guessing + 1] = u
+    end
+  end
+  -- The newest first.
+  table.sort(guessing, function(a, b)
+    local sa, sb = a.started or 0, b.started or 0
+    if sa ~= sb then
+      return sa > sb
+    end
+    return a.pid > b.pid
+  end)
+
+  local function born(chat)
+    return chat.created or chat.updated or chat.mtime or 0
+  end
+  local function moved(chat)
+    return chat.updated or chat.mtime or 0
+  end
+  --- A session that ran in a process which is gone, and has not moved
+  --- since: nobody's now.
+  local function left_behind(id, chat)
+    local pid = owners[id]
+    return pid ~= nil and not pids[pid] and moved(chat) <= (seen_at[pid] or 0) + 10
+  end
+  --- A session in a folder of `u` that no process has been given.
+  local function free(id, chat, u)
+    return not out[id]
+      and not chat.parent_id
+      and chat.cwd ~= nil
+      and u.dirs[chat.cwd] == true
+      and not left_behind(id, chat)
+  end
+  local function born_in(u, chat)
+    return u.started ~= nil and born(chat) >= u.started - 2
+  end
+  local function norm(s)
+    return (vim.trim(s):gsub('%s+', ' ')):sub(1, 200)
+  end
+
+  -- A process started with a prompt made the chat that begins with that
+  -- prompt and was born once the process was there. (Of two started with
+  -- the same words, the older has the older chat.)
+  local made_by = {} ---@type table<string, table>
+  for i = #guessing, 1, -1 do
+    local u = guessing[i]
+    local want = u.args.prompt and not u.args.continue and norm(u.args.prompt) or ''
+    if want ~= '' then
+      local best
+      for id, chat in pairs(chats) do
+        if
+          free(id, chat, u)
+          and not made_by[id]
+          and chat.first_prompt
+          and norm(chat.first_prompt) == want
+          and (not u.started or born_in(u, chat))
+          and (not best or born(chat) < born(chats[best]))
+        then
+          best = id
+        end
+      end
+      if best then
+        u.own, made_by[best] = best, u
+      end
+    end
+  end
+  -- And it is still in that chat, unless a chat nobody is known to have
+  -- made was born in its folder later: the process may have gone on to
+  -- that one (`/new`).
+  for _, u in ipairs(guessing) do
+    if u.own then
+      local doubt = false
+      for id, chat in pairs(chats) do
+        if
+          id ~= u.own
+          and not made_by[id]
+          and free(id, chat, u)
+          and born(chat) > born(chats[u.own])
+        then
+          doubt = true
+          break
+        end
+      end
+      if not doubt then
+        out[u.own] = { pid = u.pid, cwd = u.cwd }
+        u.placed = true
+      end
+    end
+  end
+
+  -- The rest is a guess.
+  local rest = {}
+  for _, u in ipairs(guessing) do
+    -- (Started with a prompt a moment ago: its chat is about to appear,
+    -- and no other is taken for it meanwhile.)
+    local soon = u.args.prompt and not u.own and u.started and now - u.started < 20
+    if not u.placed and not soon then
+      rest[#rest + 1] = u
+    end
+  end
+  --- The chat among `fits` that moved last.
+  local function latest(u, fits)
+    local best
+    for id, chat in pairs(chats) do
+      if
+        free(id, chat, u)
+        and (not made_by[id] or made_by[id] == u)
+        and fits(chat)
+        and (not best or moved(chat) > moved(chats[best]))
+      then
+        best = id
+      end
+    end
+    return best
+  end
+  for _, u in ipairs(rest) do
+    -- With another process to guess for in the same folder, nothing tells
+    -- the two apart for certain. The guess is still made (the chat's row
+    -- leads to a terminal, where what is on the screen settles it), and
+    -- it is marked as one: nothing is typed into a terminal on a guess.
+    local contested = false
+    for _, v in ipairs(rest) do
+      if v ~= u then
+        for dir in pairs(u.dirs) do
+          contested = contested or v.dirs[dir] == true
+        end
+      end
+    end
+    local function since_start(chat)
+      return not u.started or moved(chat) >= u.started - 5
+    end
+    local id
+    if contested then
+      -- The chat it made itself, then one born while it ran, then one
+      -- that has moved while it ran.
+      id = (u.own and not out[u.own]) and u.own
+        or latest(u, function(chat)
+          return born_in(u, chat)
+        end)
+        or latest(u, since_start)
+    else
+      -- Alone in its folder: the chat there that moved last while it ran.
+      id = latest(u, since_start)
+    end
+    if id then
+      out[id] = { pid = u.pid, cwd = u.cwd, unsure = contested or nil }
     end
   end
 
@@ -739,6 +895,15 @@ function M.live(chats, reported)
   end
   for id, l in pairs(hosted) do
     out[id] = l
+  end
+  -- Remembered for the next look (see `left_behind`).
+  for id, l in pairs(out) do
+    if l.pid and not hosted[id] then
+      owners[id] = l.pid
+    end
+  end
+  for pid in pairs(pids) do
+    seen_at[pid] = now
   end
   return out
 end
@@ -962,10 +1127,9 @@ end
 -- Commands
 -----------------------------------------------------------------------------
 
--- A prompt that starts with a dash would be read as an option.
-local function arg(prompt)
-  return prompt:sub(1, 1) == '-' and (' ' .. prompt) or prompt
-end
+-- A prompt that the program could take for an option or a command of its
+-- own is kept from that (see `common.arg`).
+local arg = common.arg
 
 function M.resume_cmd(chat)
   return common.cmd('opencode', '-s', chat.id)
@@ -977,10 +1141,6 @@ function M.new_cmd(opts)
     vim.list_extend(args, { '--prompt', arg(opts.prompt) })
   end
   return common.cmd('opencode', args)
-end
-
-function M.fork_cmd(chat)
-  return common.cmd('opencode', '-s', chat.id, '--fork')
 end
 
 function M.headless_cmd(chat, prompt)
