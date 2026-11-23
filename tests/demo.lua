@@ -49,6 +49,10 @@ for _, name in ipairs({ 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'QWEN_HOME', 'QWEN_RU
   vim.env[name] = nil
 end
 vim.cmd('runtime plugin/agent-chats.lua')
+-- Processes as well: an agent you have running right now is found by its
+-- process, and would turn up in the scene as a chat of yours. Only what this
+-- scene starts itself is seen.
+require('agent-chats.util.proc')._scope = vim.uv.os_getpid()
 
 local fx = require('helpers.claude')
 local cx = require('helpers.codex')
@@ -230,6 +234,8 @@ state.update(function(s)
 end)
 -- A reply waiting for the busy chat to finish its turn.
 state.enqueue('claude:' .. b.id, 'Then run the benchmarks and post the numbers.')
+-- A note: its words are on the row, behind its mark.
+state.set_note('qwen:' .. readme.id, 'badge URL?')
 -- The agents' status hooks are installed, as they are after the one-time
 -- `:Chats hooks install` (in the sandbox: these are not your settings).
 local hooks = require('agent-chats.hooks')
@@ -382,6 +388,12 @@ if vim.env.DEMO_DUMP then
   if vim.env.DEMO_DUMP == 'all' then
     on('qwen:' .. readme.id)
     screen('an unread chat: first prompt, last prompt, last reply')
+    -- Read (as going into it does): it keeps its place under the cursor.
+    state.mark_seen('qwen:' .. readme.id)
+    store.touch()
+    screen('the same chat, read: it stays where it is until the cursor moves on')
+    state.mark_unseen('qwen:' .. readme.id)
+    store.touch()
     on('claude:' .. b.id)
     screen('a working chat with a reply queued')
     on('claude:' .. checklist.id)
@@ -421,9 +433,12 @@ if vim.env.DEMO_DUMP then
     state.set_group('claude:' .. a.id, nil)
     state.set_group('claude:' .. checklist.id, nil)
     store.touch()
+    -- (Which way the switch for notifications is, its line in the menu says.)
     require('agent-chats.notify').set(false)
     on('claude:' .. checklist.id)
-    screen('with notifications switched off: the first line says so')
+    board.menu()
+    lines('with notifications switched off: the menu says which way the switch goes', menu.lines())
+    menu.close()
     require('agent-chats.notify').set(true)
 
     board.set_group('folder')

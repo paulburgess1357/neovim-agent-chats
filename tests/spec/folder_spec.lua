@@ -1,7 +1,6 @@
--- Where a chat's agent is started. Opening an ended chat, sending it a
--- reply that was queued and passing it on all start an agent: always in
--- the chat's own folder, for every agent, whatever Neovim's own working
--- folder is.
+-- Where a chat's agent is started. Opening an ended chat and sending it a
+-- reply that was queued both start an agent: always in the chat's own
+-- folder, for every agent, whatever Neovim's own working folder is.
 --
 -- Each agent's stand-in here is a script under the agent's name that writes
 -- down its arguments and the folder it was started in.
@@ -189,8 +188,8 @@ describe('the folder a chat is started in', function()
       has(log, 'argv: ' .. agent.resume:format(id))
       has(log, 'cwd: ' .. dir)
       hasnt(log, elsewhere)
-      -- The terminal says where it is, too: the end of the path at the least.
-      has(vim.wo[board()._state.pane_win].winbar, 'the project')
+      -- The row of the chat says where it is: the end of the path.
+      has(T.buf_text(board()._state.buf), 'the project')
     end)
 
     it(('%s: a reply to an ended chat resumes it there'):format(agent.name), function()
@@ -218,27 +217,6 @@ describe('the folder a chat is started in', function()
       has(log, 'cwd: ' .. dir)
     end)
 
-    it(('%s: passing it on starts the new chat in the same folder'):format(agent.name), function()
-      local dir = folder()
-      local key, _, cmd = scene(agent, dir)
-      board().open()
-      local real = vim.ui.select
-      vim.ui.select = function(items, _, cb)
-        cb(items[1])
-      end
-      actions().pass(store().get(key))
-      local input = require('agent-chats.ui.input')
-      T.wait(3000, function()
-        return input.is_open()
-      end)
-      vim.ui.select = real
-      has(T.buf_text(api.nvim_get_current_buf()), 'Folder: ' .. dir)
-      input.submit()
-      local log = started(cmd)
-      has(log, 'cwd: ' .. dir)
-      hasnt(log, elsewhere)
-    end)
-
     it(
       ('%s: a chat with no folder left is read, and nothing is started'):format(agent.name),
       function()
@@ -247,13 +225,18 @@ describe('the folder a chat is started in', function()
         -- The folder is moved away after the chat was made.
         assert(vim.uv.fs_rename(dir, dir .. ' (moved)'))
         board().open()
+        -- It is listed apart from the chats that can be resumed.
+        local listed = T.buf_text(board()._state.buf)
+        has(listed, 'Folder gone  1   can be read, not resumed')
+        hasnt(listed, 'Ended')
         board().goto_chat(key)
+        -- Enter reads it, as the bar says it does, and no message is
+        -- needed for that.
+        has(vim.wo[board()._state.win].winbar, 'Read')
         local said = notes(function()
           eq(nil, actions().open(store().get(key)))
         end)
-        has(said, 'is gone')
-        has(said, 'cannot be resumed')
-        has(said, 'It can still be read')
+        eq('', said)
         eq(
           'agent-chats-conversation',
           vim.bo[api.nvim_win_get_buf(board()._state.pane_win)].filetype,
@@ -386,7 +369,7 @@ describe('the folder a chat is started in', function()
 
   it('starts a new chat in the folder it names, and says which before it does', function()
     local dir = folder('fresh start')
-    local home = require('helpers.claude').home({ board = { spinner = false } })
+    require('helpers.claude').home({ board = { spinner = false } })
     local cmd = stand_in('claude')
     store().refresh_sync()
     store().start = function() end
@@ -405,6 +388,5 @@ describe('the folder a chat is started in', function()
     local log = started(cmd)
     has(log, 'cwd: ' .. dir)
     has(log, 'argv: --session-id ')
-    ok(home)
   end)
 end)

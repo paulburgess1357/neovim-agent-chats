@@ -39,9 +39,8 @@ local ns = api.nvim_create_namespace('agent-chats-menu')
 ---@field action string?     Its name in the `keys` option, for the key beside it.
 ---@field run fun()?
 ---@field heading string?    Not a choice: the words over the lines that follow.
----@field separator boolean?
 
----@type { win: integer, buf: integer, origin: integer, title: string, items: agent_chats.MenuItem[], rows: table<integer, agent_chats.MenuItem>, mapped: string[], own: table<string, boolean> }?
+---@type { win: integer, buf: integer, origin: integer, title: string, footer: string?, items: agent_chats.MenuItem[], rows: table<integer, agent_chats.MenuItem>, mapped: string[], own: table<string, boolean> }?
 local active
 
 -- Keys that move in the menu or leave it. An action whose own key is one
@@ -86,7 +85,7 @@ function M.layout(items, cur)
   local key_w, text_w, starred = 0, 0, false
   local shown = {}
   for i, item in ipairs(items) do
-    if not item.separator and not item.heading then
+    if not item.heading then
       local lhs, yours = keys_of(item, cur)
       local key = keys.shown(lhs)
       local label, words = '', item.text or ''
@@ -119,9 +118,6 @@ function M.layout(items, cur)
       marks[#marks + 1] = { line, 0, 2 + #lead, 'AgentChatsDim' }
       marks[#marks + 1] = { line, 2 + #lead, 2 + #lead + #item.heading, 'AgentChatsHeader' }
       marks[#marks + 1] = { line, 2 + #lead + #item.heading, #lines[#lines], 'AgentChatsDim' }
-    elseif item.separator then
-      lines[#lines + 1] = '  ' .. string.rep('─', inner)
-      marks[#marks + 1] = { #lines - 1, 0, #lines[#lines], 'AgentChatsDim' }
     else
       local s = shown[i]
       local pad = string.rep(' ', key_w - vim.api.nvim_strwidth(s.label) + gap)
@@ -167,12 +163,51 @@ function M.close()
   end
 end
 
-local draw
+--- The line in the border under the menu: its keys, and, when the menu is
+--- taller than the screen has room for, that there is more of it and which
+--- way. (It goes round at its ends and scrolls by itself, but a list that
+--- ends at the edge of its window looks like one that ends there.)
+---@param more string?  '↓', '↑' or '↑↓'.
+---@param room integer  Cells there are for it.
+---@return string
+function M.footer(more, room)
+  local keys_ = 'Enter Choose · q Close'
+  if not more then
+    return ' ' .. keys_ .. ' '
+  end
+  local full = (' %s More · %s '):format(more, keys_)
+  if vim.api.nvim_strwidth(full) <= room then
+    return full
+  end
+  -- That there is more is what would not be found out otherwise.
+  return (' %s More '):format(more)
+end
+
+--- Say in the footer which way the menu goes on, as it is scrolled.
+local function foot()
+  local cur = active
+  if not cur or not api.nvim_win_is_valid(cur.win) then
+    return
+  end
+  local last = api.nvim_buf_line_count(cur.buf)
+  -- (Asked of the view, which is brought up to date for the asking: the
+  -- first and last line on screen are those of the last redraw.)
+  local top = api.nvim_win_call(cur.win, function()
+    return vim.fn.winsaveview().topline
+  end)
+  local bottom = top + api.nvim_win_get_height(cur.win) - 1
+  local more = (top > 1 and '↑' or '') .. (bottom < last and '↓' or '')
+  local footer = M.footer(more ~= '' and more or nil, api.nvim_win_get_width(cur.win) - 2)
+  if footer ~= cur.footer then
+    cur.footer = footer
+    pcall(api.nvim_win_set_config, cur.win, { footer = footer, footer_pos = 'right' })
+  end
+end
 
 --- Choose `item`: the menu goes, and it is done.
 local function choose(item)
   local cur = active
-  if not cur or not item or item.separator or item.heading then
+  if not cur or not item or item.heading then
     return
   end
   local origin = cur.origin
@@ -187,7 +222,8 @@ local function choose(item)
   end
 end
 
-draw = function()
+--- Draw the menu that is open: its lines, its size, and the keys that pick.
+local function draw()
   local cur = active
   if not cur then
     return
@@ -196,6 +232,11 @@ draw = function()
   local width = 24
   for _, l in ipairs(lines) do
     width = math.max(width, vim.api.nvim_strwidth(l) + 2)
+  end
+  if #lines > vim.o.lines - 6 then
+    -- Taller than there is room for: wide enough, at least, for its footer
+    -- to say so beside its keys.
+    width = math.max(width, vim.api.nvim_strwidth(M.footer('↑↓', 999)) + 2)
   end
   -- A menu, not a banner: a line that is longer loses its end.
   local limit = math.max(24, math.min(vim.o.columns - 4, 72))
@@ -230,11 +271,12 @@ draw = function()
   -- A title wider than the menu is cut by Neovim at its start, which is
   -- the part that says whose menu this is: cut here instead, at its end.
   local title = require('agent-chats.util.text').truncate(cur.title, math.max(8, width - 4))
+  cur.footer = M.footer(nil, width - 2)
   api.nvim_win_set_config(cur.win, {
     width = width,
     height = height,
     title = ' ' .. title .. ' ',
-    footer = ' Enter choose · q close ',
+    footer = cur.footer,
     footer_pos = 'right',
   })
   -- The keys shown beside the items pick them here too.
@@ -282,8 +324,8 @@ draw = function()
   end
   -- The key of an action that is not listed for this row at all acts as
   -- well: it does what it does where the menu was opened from, which may be
-  -- to say why it cannot be done. (Left to Vim, `Q` or `C` in a window that
-  -- cannot be changed is an error message.)
+  -- to say why it cannot be done. (Left to Vim, `C` in a window that cannot
+  -- be changed is an error message.)
   for _, action in ipairs(cur.actions) do
     local lhs, yours = cur.keys(action)
     if not yours then
@@ -321,6 +363,7 @@ draw = function()
     end
   end
   pcall(api.nvim_win_set_cursor, cur.win, { line or 1, 2 })
+  foot()
 end
 
 --- Move to the next line that stands for an item.
@@ -340,6 +383,7 @@ local function step(dir)
     end
     if cur.rows[line] then
       pcall(api.nvim_win_set_cursor, cur.win, { line, 2 })
+      foot()
       return
     end
   end
@@ -446,6 +490,8 @@ function M.open(items, opts)
       if active ~= mine or not api.nvim_win_is_valid(win) then
         return
       end
+      -- (After the window has scrolled to where the cursor went.)
+      vim.schedule(foot)
       local line = api.nvim_win_get_cursor(win)[1]
       if mine.rows[line] then
         was = line
@@ -463,6 +509,15 @@ function M.open(items, opts)
           end
           l = l + d
         end
+      end
+    end,
+  })
+  -- Scrolled without the cursor moving (the wheel): the footer follows.
+  api.nvim_create_autocmd('WinScrolled', {
+    pattern = tostring(win),
+    callback = function()
+      if active == mine then
+        foot()
       end
     end,
   })
@@ -499,7 +554,7 @@ function M.pick(what)
     return false
   end
   for _, item in ipairs(cur.items) do
-    if not item.separator and not item.heading and (item.action == what or item.text == what) then
+    if not item.heading and (item.action == what or item.text == what) then
       choose(item)
       return true
     end

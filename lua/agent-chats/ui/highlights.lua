@@ -25,6 +25,11 @@ local LINKS = {
   AgentChatsMatch = 'Search',
   AgentChatsKey = 'Special',
   AgentChatsLive = 'DiagnosticOk',
+  -- The row of the chat that is in the pane: the line, and the bar at its
+  -- left. (Not the cursor line's group: many colorschemes and configs make
+  -- that one faint, or take it away in a window the cursor is not in.)
+  AgentChatsShown = 'Visual',
+  AgentChatsShownMark = 'Title',
 }
 
 function M.apply()

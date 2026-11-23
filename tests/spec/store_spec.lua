@@ -306,7 +306,7 @@ describe('store events', function()
   end)
 
   it('notifies for attention and done, respecting the options', function()
-    local home = fx.home({ notify = { enabled = true } })
+    fx.home({ notify = { enabled = true } })
     local notify = require('agent-chats.notify')
     local seen = {}
     local real = vim.notify
@@ -343,7 +343,6 @@ describe('store events', function()
     ok(notify.handle({ chat = chat, from = 'working', to = 'done', fresh = true }))
     eq(count, #seen, 'a handler that returns true replaces the default')
     vim.notify = real
-    no(home == nil)
   end)
 end)
 

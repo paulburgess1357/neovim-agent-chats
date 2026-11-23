@@ -61,24 +61,18 @@ end
 ---@class agent_chats.InputOpts
 ---@field title string
 ---@field text string?         Text to start with.
----@field height integer?
----@field allow_empty boolean?  Call back with "" instead of treating it as a cancel.
----@field verb string?          What sending is called in the footer ("send" when nil).
----@field review boolean?       Open on text that is there to be read first (notes): in normal mode, at the top. Otherwise the box opens ready to type, after whatever is in it.
 
 --- The line under the box that names its keys: in full where there is
 --- room for it, else said more briefly. The key that sends is never left out.
----@param opts agent_chats.InputOpts
 ---@param room integer?  Cells there are for it; all it takes when nil.
 ---@return string
-function M.footer(opts, room)
-  local verb = opts.verb or 'send'
+function M.footer(room)
   local forms = {
-    (' <C-s> %s · Enter %s (normal mode) · q / Esc cancel '):format(verb, verb),
-    (' <C-s> %s · Enter %s (normal) · q / Esc cancel '):format(verb, verb),
+    ' <C-s> Send · Enter Send (normal mode) · q / Esc Cancel ',
+    ' <C-s> Send · Enter Send (normal) · q / Esc Cancel ',
     -- How to call it off is kept longer than a second way to send.
-    (' <C-s> %s · q / Esc cancel '):format(verb),
-    (' <C-s> %s '):format(verb),
+    ' <C-s> Send · q / Esc Cancel ',
+    ' <C-s> Send ',
   }
   for _, form in ipairs(forms) do
     if not room or vim.api.nvim_strwidth(form) <= room then
@@ -105,7 +99,7 @@ function M.open(opts, cb)
   api.nvim_buf_set_lines(buf, 0, -1, false, start)
 
   local width = math.max(30, math.min(96, vim.o.columns - 8))
-  local height = math.max(3, math.min(opts.height or math.max(6, #start + 1), vim.o.lines - 8))
+  local height = math.max(3, math.min(math.max(6, #start + 1), vim.o.lines - 8))
   local border = require('agent-chats.config').box_border()
   local win = api.nvim_open_win(buf, true, {
     relative = 'editor',
@@ -119,7 +113,7 @@ function M.open(opts, cb)
     title = ' '
       .. require('agent-chats.util.text').truncate(opts.title, math.max(8, width - 4))
       .. ' ',
-    footer = M.footer(opts, width - 2),
+    footer = M.footer(width - 2),
     footer_pos = 'right',
     zindex = 60,
   })
@@ -131,10 +125,8 @@ function M.open(opts, cb)
     buf = buf,
     typed = opts.text,
     done = function(text, typed)
-      if text == '' and not opts.allow_empty then
-        text = nil
-      end
-      cb(text, typed)
+      -- Nothing written is nothing to send.
+      cb(text ~= '' and text or nil, typed)
     end,
   }
 
@@ -170,12 +162,7 @@ function M.open(opts, cb)
       end)
     end,
   })
-  if opts.review then
-    api.nvim_win_set_cursor(win, { 1, 0 })
-    return
-  end
-  -- Ready to type, after what is there (a reply that was kept, a prompt
-  -- half written). A moment from now: reached from another box that was
+  -- Ready to type, after what is there (a reply that was kept). A moment from now: reached from another box that was
   -- being typed in, that insert mode is still being left, and Neovim
   -- ignores `:startinsert` until it has been.
   api.nvim_win_set_cursor(win, { #start, math.max(0, #start[#start] - 1) })

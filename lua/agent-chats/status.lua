@@ -29,15 +29,6 @@ M.labels = {
   ended = 'Ended',
 }
 
--- Short forms for rows that state the status in words.
-M.short = {
-  attention = 'needs you',
-  working = 'working',
-  done = 'unread',
-  idle = 'idle',
-  ended = 'ended',
-}
-
 -- What each one means, in a few words: shown beside its heading on the
 -- board, so that no table is needed to tell "Idle" from "Ended".
 M.about = {
@@ -64,9 +55,6 @@ M.hl = {
   idle = 'AgentChatsIdle',
   ended = 'AgentChatsEnded',
 }
-
---- Statuses that ask for the user's eyes, most urgent first.
-M.wants_you = { attention = true, done = true }
 
 --- Pick the board status for a chat.
 ---@param chat agent_chats.Chat

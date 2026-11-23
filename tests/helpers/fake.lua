@@ -31,11 +31,6 @@ for a in "$@"; do
 done
 for a in "$@"; do
   if [ "$a" = "-p" ]; then echo "headless done" >> "$log"; exit 0; fi
-  # A fork is a session of its own, as with the real agent: it does not
-  # take the place of the chat it was made from.
-  if [ "$a" = "--fork-session" ]; then
-    sid=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen 2>/dev/null || echo "fork-$$")
-  fi
 done
 if [ -n "$FAKE_AGENT_HOME" ] && [ -n "$sid" ]; then
   printf '{"pid":%d,"sessionId":"%s","cwd":"%s","status":"idle","kind":"interactive","name":"%s"}' \

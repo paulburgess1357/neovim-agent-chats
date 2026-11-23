@@ -116,6 +116,10 @@ function M.handle(ev)
   if not in_scope(chat, cfg.scope) then
     return nil
   end
+  -- Its folder is filtered out in the options: it is kept out of the way.
+  if config.filtered(chat.cwd) then
+    return nil
+  end
   -- You are looking at it.
   local term = package.loaded['agent-chats.term']
   if term and chat.term and term.is_focused(chat.term) then

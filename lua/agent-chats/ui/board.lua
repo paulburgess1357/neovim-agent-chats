@@ -1,20 +1,24 @@
 -- The board: every chat in one list, with a pane beside it.
 --
 --   +---------------------------------------------+---------------------------+
---   | Enter open  C conversation          ? more  | Summary                   |
---   | 12 chats · 2 need you   + new  M notify: on |                           |
---   |                                             |  the chat under the       |
---   | ▾ Needs you  2                              |  cursor: its live         |
---   |  ● Claude  Fix flaky restore            2m  |  terminal when it runs    |
---   | ▾ Working  3                                |  in this Neovim, a        |
---   |  ◐ Codex   Port renderer               41s  |  summary otherwise        |
+--   | Enter Open  C Conversation  + New  ? Menu   |                           |
+--   | 12 chats · 2 need you                       |  the chat under the       |
+--   |                                             |  cursor: its live         |
+--   | ▾ Needs you  2                              |  terminal when it runs    |
+--   | ▌● Claude  Fix flaky restore            2m  |  in this Neovim, a        |
+--   | ▾ Working  3                                |  summary otherwise        |
+--   |  ◐ Codex   Port renderer               41s  |                           |
 --   +---------------------------------------------+---------------------------+
 --
 -- The list is a plain buffer rendered from the index (store.lua). The bar
--- above it names what can be done with the row under the cursor, and the
--- keys for it. The pane follows the cursor while the list has focus;
--- opening a chat or a conversation puts it in the pane and moves the cursor
--- there.
+-- above it is the one place that names keys: at its left what can be done
+-- with the row under the cursor, at its right what can be done with the
+-- list, and last the way to the menu. The pane follows the cursor while
+-- the list has focus; opening a chat or a conversation puts it in the pane
+-- and moves the cursor there, and for as long as it is there the bar names
+-- the keys of that view (the way back, first of all). The pane has no
+-- title of its own. The row of the chat that is in the pane is marked (the
+-- bar at its left), wherever the cursor is.
 
 local api = vim.api
 local config = require('agent-chats.config')
@@ -34,7 +38,13 @@ local M = {}
 
 local ns = api.nvim_create_namespace('agent-chats-board')
 local ns_spin = api.nvim_create_namespace('agent-chats-spinner')
+local ns_shown = api.nvim_create_namespace('agent-chats-shown')
 local GROUP_MODES = { 'status', 'folder', 'agent', 'worktree' }
+-- The group of the chats whose folders the options filter out
+-- (`filter_out`): the same one however the list is grouped.
+local FILTERED = 'filtered'
+-- The group of the chats whose folder is no longer there (by status).
+local GONE = 'status:gone'
 -- How long typing has to pause before the conversations are read too (ms).
 M._search_delay = 250
 -- The introduction is shown once; raising this shows it once more.
@@ -44,6 +54,8 @@ local INTRO = 1
 ---@field kind "header"|"blank"|"group"|"chat"|"hit"|"more"|"older"|"info"
 ---@field chat agent_chats.Chat?
 ---@field group string?   Group id.
+---@field own string?     On the heading of a group of your own: its name.
+---@field filtered boolean?  On the heading of the chats that are filtered out.
 ---@field hit agent_chats.Hit?
 ---@field id string?      Identity used to keep the cursor in place.
 
@@ -75,6 +87,10 @@ local S = {
   pending_pane = false,
   intro = false, ---@type boolean
   intro_row = nil, ---@type (string|boolean)?
+  -- The chat under the list's cursor, and the status it was listed under
+  -- when the cursor came to it (see `listed_as`). `free`: it goes where
+  -- its status puts it all the same (its read mark was set by hand).
+  hold = nil, ---@type { key: string, status: string?, free: boolean? }?
 }
 
 local function valid_win(win)
@@ -116,6 +132,25 @@ end
 ---@return integer?
 function M.buf()
   return M.is_open() and S.buf or nil
+end
+
+--- Whether the group `id` is folded. The chats that are filtered out, and
+--- those that cannot be resumed because their folder is gone, are out of
+--- the way until they are asked for: folded until unfolded, where every
+--- other group is open until it is folded.
+---@return boolean
+local function folded(id)
+  if id == FILTERED or id == GONE then
+    return not state.collapsed(id .. ':open')
+  end
+  return state.collapsed(id)
+end
+
+local function set_folded(id, value)
+  if id == FILTERED or id == GONE then
+    return state.set_collapsed(id .. ':open', not value)
+  end
+  state.set_collapsed(id, value)
 end
 
 -----------------------------------------------------------------------------
@@ -167,13 +202,66 @@ local function visible_chats()
   return out
 end
 
+--- The status `chat` is listed under: its own, with one exception.
+---
+--- A chat is not moved from under the cursor for having been read. Looked
+--- at, an unread chat becomes "Idle" or "Ended", which is another group:
+--- the row would jump away with the cursor on it, and the list would close
+--- up where it was. So the chat the cursor is on stays where it was when
+--- the cursor came to it, for as long as all that has happened to it is
+--- that it was read. Its mark says that it has been; it goes to its new
+--- place when the cursor leaves the row. What the agent does (a new turn,
+--- a question, its exit) moves it at once, as it always did.
+---@return string
+local function listed_as(chat)
+  local hold = S.hold
+  if
+    hold
+    and hold.key == chat.key
+    and not hold.free
+    and hold.status == 'done'
+    and (chat.status == 'idle' or chat.status == 'ended')
+  then
+    return 'done'
+  end
+  return chat.status
+end
+
+--- Note which chat the list's cursor is on now, and how it is listed.
+local function hold_row()
+  local row = valid_win(S.win) and S.rows[api.nvim_win_get_cursor(S.win)[1]] or nil
+  local chat = row and row.chat and store.get(row.chat.key) or nil
+  if not chat then
+    S.hold = nil
+    return
+  end
+  local hold = S.hold
+  if not hold or hold.key ~= chat.key then
+    S.hold = { key = chat.key, status = chat.status }
+  elseif listed_as(chat) == chat.status then
+    -- Nothing is being kept in place: it is listed as what it is.
+    hold.status = chat.status
+  end
+end
+
+--- Whether the cursor has left a row that was being kept in its place.
+local function hold_left()
+  local hold = S.hold
+  local chat = hold and store.get(hold.key) or nil
+  if not chat or listed_as(chat) == chat.status then
+    return false
+  end
+  local row = valid_win(S.win) and S.rows[api.nvim_win_get_cursor(S.win)[1]] or nil
+  return not (row and row.chat and row.chat.key == hold.key)
+end
+
 local function chat_order(a, b)
   local pa, pb = state.pinned(a.key), state.pinned(b.key)
   if pa ~= pb then
     return pa
   end
   if S.group_by ~= 'status' then
-    local ra, rb = status.rank[a.status] or 9, status.rank[b.status] or 9
+    local ra, rb = status.rank[listed_as(a)] or 9, status.rank[listed_as(b)] or 9
     if ra ~= rb then
       return ra < rb
     end
@@ -192,7 +280,7 @@ local function own_order(a, b)
   if pa ~= pb then
     return pa
   end
-  local ra, rb = status.rank[a.status] or 9, status.rank[b.status] or 9
+  local ra, rb = status.rank[listed_as(a)] or 9, status.rank[listed_as(b)] or 9
   if ra ~= rb then
     return ra < rb
   end
@@ -245,10 +333,29 @@ local function build_groups(chats)
     end
     return g
   end
+  -- Whether a folder is still there, asked once for each.
+  local there = {}
+  local function has_folder(chat)
+    local cwd = chat.cwd
+    if not cwd then
+      return true
+    end
+    if there[cwd] == nil then
+      there[cwd] = fs.is_dir(cwd)
+    end
+    return there[cwd]
+  end
 
   for _, chat in ipairs(chats) do
     local g
-    if mode == 'agent' then
+    if config.filtered(chat.cwd) then
+      -- Its folder is filtered out in the options: it is with the others
+      -- of that kind, however the list is grouped and whatever group of
+      -- yours it was put in.
+      g = group(FILTERED, 'Filtered out', 'AgentChatsGroup')
+      g.id, g.filtered = FILTERED, true
+      g.about, g.about_short = 'folders named in filter_out', 'by folder'
+    elseif mode == 'agent' then
       g = group(chat.provider, providers.label(chat.provider), 'AgentChatsGroup')
     elseif mode == 'folder' then
       local cwd = chat.cwd or '(unknown folder)'
@@ -295,14 +402,36 @@ local function build_groups(chats)
         g = group('own:' .. own, own, 'AgentChatsGroup')
         g.own = own
       else
-        g = group(chat.status, status.labels[chat.status] or chat.status, status.hl[chat.status])
-        -- A heading that says what it means: no table to look it up in.
-        g.about = status.about[chat.status]
-        g.about_short = status.about_short[chat.status]
+        local st = listed_as(chat)
+        if st == 'ended' and not has_folder(chat) then
+          -- "Ended" says its chats can be resumed, and this one cannot:
+          -- an agent takes a chat up only in the folder it was in. It is
+          -- with the others of that kind, after everything else.
+          g = group('gone', 'Folder gone', status.hl.ended)
+          g.status, g.gone = 'gone', true
+          g.about, g.about_short = 'can be read, not resumed', 'read only'
+        else
+          g = group(st, status.labels[st] or st, status.hl[st])
+          g.status = st
+          -- A heading that says what it means: no table to look it up in.
+          g.about = status.about[st]
+          g.about_short = status.about_short[st]
+        end
       end
     end
     g.chats[#g.chats + 1] = chat
     g.latest = math.max(g.latest, chat.updated or 0)
+  end
+
+  -- What is filtered out comes last, however the rest is ordered.
+  local aside = by[FILTERED]
+  if aside then
+    for i, g in ipairs(order) do
+      if g == aside then
+        table.remove(order, i)
+        break
+      end
+    end
   end
 
   if mode == 'status' then
@@ -317,7 +446,7 @@ local function build_groups(chats)
         end
         return a.own < b.own
       end
-      return (status.rank[a.chats[1].status] or 9) < (status.rank[b.chats[1].status] or 9)
+      return (status.rank[a.status] or 9) < (status.rank[b.status] or 9)
     end)
     -- A group of yours holds chats in every state, and folded it shows
     -- none of them: its heading says what in it wants a look.
@@ -352,7 +481,7 @@ local function build_groups(chats)
     local function urgency(g)
       local best = 9
       for _, c in ipairs(g.chats) do
-        best = math.min(best, status.rank[c.status] or 9)
+        best = math.min(best, status.rank[listed_as(c)] or 9)
       end
       return math.min(best, 3)
     end
@@ -364,8 +493,12 @@ local function build_groups(chats)
       return a.latest > b.latest
     end)
   end
+  if aside then
+    order[#order + 1] = aside
+  end
   for _, g in ipairs(order) do
-    table.sort(g.chats, g.own and own_order or chat_order)
+    -- (A group of chats in every state: what needs you first.)
+    table.sort(g.chats, (g.own or g.filtered) and own_order or chat_order)
   end
   return order
 end
@@ -396,28 +529,6 @@ local function extend(line, other)
   for i, part in ipairs(other.parts) do
     add(line, part, other.hls[i] or nil)
   end
-end
-
---- `key label` as a piece of a line, the key set apart; nil when the
---- action has no key (a hint never names a key that does nothing).
-local function hint_piece(action, label)
-  local key = keys.key(action)
-  if not key then
-    return nil
-  end
-  local piece = Line()
-  add(piece, key, 'AgentChatsKey')
-  add(piece, ' ' .. label, 'AgentChatsDim')
-  return piece
-end
-
---- `key label` for a key that is not an action's (those of the prompt a
---- search is typed at).
-local function key_piece(key, label)
-  local piece = Line()
-  add(piece, key, 'AgentChatsKey')
-  add(piece, ' ' .. label, 'AgentChatsDim')
-  return piece
 end
 
 local function glyph_for(chat, icons)
@@ -472,10 +583,8 @@ local function chat_line(chat, depth, cols, width, now)
   local function mark(str, hl, rank)
     marks[#marks + 1] = { text = str, hl = hl, rank = rank, width = text.width(str) }
   end
+  local note = not chat.subagent and state.note(chat.key) or nil
   if not chat.subagent then
-    if state.note(chat.key) then
-      mark(' ' .. icons.note, 'AgentChatsNote', 3)
-    end
     local queued = #state.queue(chat.key)
     if queued > 0 then
       mark((' %s%d'):format(icons.queue, queued), 'AgentChatsQueue', 1)
@@ -490,7 +599,12 @@ local function chat_line(chat, depth, cols, width, now)
     if state.is_archived(chat.key, chat.updated) then
       mark(' archived', 'AgentChatsDim', 4)
     end
+    -- Last: what the note says goes on behind its mark.
+    if note then
+      mark(' ' .. icons.note, 'AgentChatsNote', 3)
+    end
   end
+  local note_mark = note and marks[#marks] or nil
 
   local pinned = not chat.subagent and state.pinned(chat.key)
   if pinned then
@@ -521,7 +635,20 @@ local function chat_line(chat, depth, cols, width, now)
   if chat.subagent and chat.agent_type then
     name = chat.agent_type .. ': ' .. name
   end
-  local title = text.truncate(name, room - used)
+  -- A note is shown in its own words, behind its mark. The title is what
+  -- the row is known by: it gives up a third of its room at most. Where
+  -- that is too little to say much of the note (it takes a dozen cells, or
+  -- room for all of it), the mark stands alone, as it does on a narrow list.
+  local avail, said = room - used, ''
+  if note_mark and not note_mark.gone then
+    local words = text.oneline(note)
+    local want = text.width(words) + 1
+    local share = math.max(avail - text.width(name), math.min(want, math.floor(avail / 3)))
+    if share >= want or share >= 12 then
+      said = ' ' .. text.truncate(words, share - 1)
+    end
+  end
+  local title = text.truncate(name, avail - text.width(said))
   local title_hl = (chat.status == 'done' or chat.status == 'attention') and 'AgentChatsUnread'
     or (chat.status == 'ended' and 'AgentChatsEnded' or 'AgentChatsTitle')
   add(line, title, title_hl)
@@ -530,6 +657,7 @@ local function chat_line(chat, depth, cols, width, now)
       add(line, m.text, m.hl)
     end
   end
+  add(line, said, 'AgentChatsNote')
   add(line, string.rep(' ', math.max(1, width - line.width - right.width)))
   extend(line, right)
   return line, glyph_col
@@ -563,33 +691,36 @@ local function plural(n, one, many)
   return ('%d %s'):format(n, n == 1 and one or (many or (one .. 's')))
 end
 
---- The first line of the list: how many chats and what they are doing on
---- the left, what can be done with the board as a whole on the right. On a
---- narrow list it says the same in fewer cells, step by step, rather than
---- lose the keys: counts shrink to glyphs before a hint is dropped.
+--- The first line of the list: how many chats and what they are doing, or
+--- what a search found; at the right, how the list is arranged where that
+--- is not the usual way. No keys: those are on the bar above. On a narrow
+--- list it says the same in fewer cells, step by step.
 local function header_line(chats, width)
   -- The numbers are those of the rows below: with a search on, of what
   -- the search left.
-  local c = { attention = 0, working = 0, done = 0 }
+  -- Not those that are filtered out: they are under a heading of their own,
+  -- with their number. (What a search found is counted whole.)
+  local c, total = { attention = 0, working = 0, done = 0 }, 0
   for _, chat in ipairs(chats) do
-    if c[chat.status] then
-      c[chat.status] = c[chat.status] + 1
+    if S.search or not config.filtered(chat.cwd) then
+      total = total + 1
+      if c[chat.status] then
+        c[chat.status] = c[chat.status] + 1
+      end
     end
   end
   local icons = config.get().icons
   -- The ways to say each side, richest first, and the pairs of them
   -- (`{ left, right }`) in order of preference.
   local lefts, rights, order = {}, {}, {}
-  --- A right-hand side from pieces (nil ones, hints without a key, left out).
+  --- A right-hand side of notes (nil ones left out).
   local function side(...)
     local line, any = Line(), false
     for i = 1, select('#', ...) do
-      local piece = select(i, ...)
-      if piece then
-        if any then
-          add(line, '   ')
-        end
-        extend(line, piece)
+      local words = select(i, ...)
+      if words then
+        add(line, any and '   ' or '')
+        add(line, words, 'AgentChatsDim')
         any = true
       end
     end
@@ -597,11 +728,6 @@ local function header_line(chats, width)
       add(line, ' ')
     end
     return line
-  end
-  local function note(words)
-    local piece = Line()
-    add(piece, words, 'AgentChatsDim')
-    return piece
   end
 
   if S.search then
@@ -625,6 +751,9 @@ local function header_line(chats, width)
     end
     local query = S.search.query
     local only_chats = plural(#chats, 'chat')
+    -- Words go one by one: the long form of what is being read, the word
+    -- "Search", the number of passages (they are listed below), and last
+    -- the end of a long text.
     lefts = {
       left('Search ', query, found, ' · reading conversations…'),
       left('Search ', query, found, ' · reading…'),
@@ -632,40 +761,17 @@ local function header_line(chats, width)
       left('', query, only_chats, ' …'),
       left('', text.truncate(query, 10), only_chats, ' …'),
     }
-    local ends = hint_piece('back', 'ends the search') or hint_piece('clear', 'ends the search')
-    local ends_short = hint_piece('back', 'ends it') or hint_piece('clear', 'ends it')
-    rights = {
-      side(ends, hint_piece('search', 'changes it')),
-      side(ends_short, hint_piece('search', 'changes it')),
-      side(ends),
-      side(ends_short),
-      Line(),
-    }
-    -- Words go before a key does: the long form of what is being read,
-    -- then that of the hints, the word "Search", the number of passages
-    -- (they are listed below) and the end of a long text. Only then does
-    -- the key that changes the search go, and last the one that ends it.
-    order = {
-      { 1, 1 },
-      { 2, 1 },
-      { 2, 2 },
-      { 3, 2 },
-      { 4, 2 },
-      { 5, 2 },
-      { 2, 3 },
-      { 3, 3 },
-      { 3, 4 },
-      { 4, 4 },
-      { 5, 4 },
-      { 5, 5 },
-    }
+    rights = { Line() }
+    for l = 1, #lefts do
+      order[l] = { l, 1 }
+    end
   else
     local words = Line()
     add(words, ' ')
-    add(words, plural(#chats, 'chat'), 'AgentChatsHeader')
+    add(words, plural(total, 'chat'), 'AgentChatsHeader')
     local glyphs = Line()
     add(glyphs, ' ')
-    add(glyphs, plural(#chats, 'chat'), 'AgentChatsHeader')
+    add(glyphs, plural(total, 'chat'), 'AgentChatsHeader')
     local function count(n, label, glyph, hl)
       if n > 0 then
         add(words, ' · ')
@@ -682,63 +788,15 @@ local function header_line(chats, width)
     count(c.working, ('%d working'):format(c.working), icons.working, 'AgentChatsWorking')
     count(c.done, ('%d unread'):format(c.done), icons.done, 'AgentChatsDone')
     lefts = { words, glyphs }
-    local grouped = S.group_by ~= 'status' and note('by ' .. S.group_by) or nil
-    local older = S.show_archived and note('older and archived shown') or nil
-    -- Notifications are switched in the menu. That they are off is said
-    -- here, where it cannot be overlooked: nothing else would tell.
-    local muted
-    if not require('agent-chats.notify').enabled() then
-      muted = Line()
-      add(muted, 'notifications off', 'AgentChatsDim')
-    end
-    local new_chat, new, search =
-      hint_piece('new', 'new chat'), hint_piece('new', 'new'), hint_piece('search', 'search')
-    rights = {
-      side(new_chat, search, muted, grouped, older),
-      side(new_chat, search, muted, grouped),
-      side(new_chat, search, muted),
-      side(new, search, muted),
-      side(new_chat, search),
-      side(new, search),
-      side(new),
-      Line(),
-    }
-    -- A note goes before a key does, and the counts go from words to marks
-    -- before "notifications off" goes: the headings below say the same in
-    -- words. The keys go last.
-    order = {
-      { 1, 1 },
-      { 1, 2 },
-      { 1, 3 },
-      { 1, 4 },
-      { 2, 3 },
-      { 2, 4 },
-      { 2, 5 },
-      { 2, 6 },
-      { 2, 7 },
-      { 2, 8 },
-      { 1, 8 },
-    }
+    local grouped = S.group_by ~= 'status' and ('by ' .. S.group_by) or nil
+    local older = S.show_archived and 'older and archived shown' or nil
+    rights = { side(grouped, older), side(grouped), Line() }
+    -- A note goes before the counts go from words to marks: the headings
+    -- below say how the list is arranged as well.
+    order = { { 1, 1 }, { 1, 2 }, { 1, 3 }, { 2, 3 } }
   end
 
-  if S.typing then
-    -- The text is being typed at the prompt: the keys that count are the
-    -- prompt's own, and they are not the board's to choose.
-    rights = {
-      side(key_piece('Enter', 'keeps it'), key_piece('Esc', 'calls it off')),
-      side(key_piece('Enter', 'keeps'), key_piece('Esc', 'calls off')),
-      Line(),
-    }
-    order = {}
-    for r = 1, #rights do
-      for l = 1, #lefts do
-        order[#order + 1] = { l, r }
-      end
-    end
-  end
-
-  -- The richest pair that fits, from a list in order of preference: a note
-  -- goes before a hint does, and the counts shrink before the last hint goes.
+  -- The richest pair that fits.
   local best
   for _, pair in ipairs(order) do
     local left, right = lefts[pair[1]], rights[pair[2]]
@@ -907,8 +965,10 @@ end
 
 local update_pane
 local update_bar
+local prepare_terminal
 local set_keys
 local summary_keys
+local mark_shown
 
 --- Sentences joined by a space, the empty ones (a hint whose key is not
 --- bound) left out.
@@ -1050,6 +1110,8 @@ function M.render()
   -- What is drawn names keys: they are settled first, each time (cheap),
   -- so that no line names one that has been taken or given back since.
   set_keys(S.buf)
+  -- Where the cursor is as this is drawn: that chat keeps its place.
+  hold_row()
   local cfg = config.get()
   local icons = cfg.icons
   local width = api.nvim_win_get_width(S.win)
@@ -1242,13 +1304,14 @@ function M.render()
 
   for _, g in ipairs(groups) do
     -- What a search found is shown, whatever was folded before it.
-    local collapsed = not S.search and state.collapsed(g.id)
+    local collapsed = not S.search and folded(g.id)
     local l = heading(g, collapsed)
     if explain and g[explain] then
       add(l, '   ' .. g[explain], 'AgentChatsDim')
     end
-    local heading = push(l, { kind = 'group', group = g.id })
-    if S.group_by ~= 'status' or g.own then
+    local heading =
+      push(l, { kind = 'group', group = g.id, own = g.own, filtered = g.filtered, gone = g.gone })
+    if (S.group_by ~= 'status' or g.own) and not g.filtered then
       -- A folder or an agent, which may be what was searched for.
       mark_terms(heading)
     end
@@ -1370,15 +1433,8 @@ function M.render()
   M.spin()
   update_bar()
   update_pane()
-  -- With the cursor in a chat's terminal, its title follows the chat: an
-  -- agent names a new chat after its first answer.
-  if
-    S.pane_mode == 'term'
-    and valid_win(S.pane_win)
-    and api.nvim_get_current_win() == S.pane_win
-  then
-    M.pane_entered(api.nvim_win_get_buf(S.pane_win))
-  end
+  -- (The rows are new: the mark is put on the one it belongs to now.)
+  mark_shown()
 end
 
 --- Advance the working-chat spinner one frame.
@@ -1404,30 +1460,31 @@ end
 -- The bar above the list: what can be done with the row under the cursor
 -----------------------------------------------------------------------------
 
---- What Enter does with `chat`, in a word and in a sentence.
+--- What Enter does with `chat`: as the bar above the list names it, and in
+--- a sentence.
 ---@return string word, string sentence
 function M.open_words(chat)
   if chat.subagent then
-    return 'read', 'Read what this subagent did'
+    return 'Read', 'Read what this subagent did'
   end
   local term = require('agent-chats.term').find(chat)
   if term then
     if chat.status == 'attention' then
-      return 'answer it', 'Go to its terminal and answer'
+      return 'Answer', 'Go to its terminal and answer'
     end
-    return 'open', 'Open: go to its terminal'
+    return 'Open', 'Open: go to its terminal'
   end
   if chat.live then
     if require('agent-chats.term').in_background(chat) then
-      return 'read', 'Read it (it is answering in the background)'
+      return 'Read', 'Read it (it is answering in the background)'
     end
-    return 'read', 'Read it (it runs outside this Neovim)'
+    return 'Read', 'Read it (it runs outside this Neovim)'
   end
   if chat.cwd and not fs.is_dir(chat.cwd) then
-    return 'read', 'Read it (its folder is gone, so it cannot be resumed)'
+    return 'Read', 'Read it (its folder is gone, so it cannot be resumed)'
   end
   -- (The folder in full is in the summary; here it must not stretch a menu.)
-  return 'resume', ('Resume it in %s'):format(chat.cwd and fs.short(chat.cwd, 44) or 'a terminal')
+  return 'Resume', ('Resume it in %s'):format(chat.cwd and fs.short(chat.cwd, 44) or 'a terminal')
 end
 
 --- Whether the agent of `chat` can be started in the chat's folder: false
@@ -1436,31 +1493,24 @@ local function startable(chat)
   return chat.live or not chat.cwd or fs.is_dir(chat.cwd)
 end
 
---- Whether `chat` can be gone into and typed to from here (a reply queued
---- for it would reach it): `false` and why not.
----@return boolean, string?
-local function reachable(chat)
-  if chat.subagent then
-    return false, 'a subagent'
-  end
-  local term = require('agent-chats.term').find(chat)
-  if chat.live and not term then
-    return false, require('agent-chats.term').in_background(chat) and 'background' or 'elsewhere'
-  end
-  if chat.status == 'attention' and term then
-    return false, 'asking'
+--- Why `chat` cannot be gone into and typed to from here; nil when it can.
+---@return ("background"|"elsewhere"|"folder gone")?
+local function out_of_reach(chat)
+  local terms = require('agent-chats.term')
+  if chat.live and not terms.find(chat) then
+    return terms.in_background(chat) and 'background' or 'elsewhere'
   end
   if not startable(chat) then
     -- Going into it would mean resuming it.
-    return false, 'folder gone'
+    return 'folder gone'
   end
-  return true
+  return nil
 end
 
 --- The hints for the row under the cursor of `win`: `{ key, label }` each,
 --- and a few words on why some are not there, when that needs saying (in
 --- full and in short).
----@return { [1]: string, [2]: string }[] hints, string[]? note
+---@return table[] hints, string[]? note
 local function row_hints(win)
   local row = S.rows[api.nvim_win_get_cursor(win)[1]]
   local out, note = {}, nil
@@ -1473,19 +1523,18 @@ local function row_hints(win)
   if row and row.kind == 'group' then
     -- (Not while a search is on: what it found is shown, folded or not.)
     if not S.search then
-      hint('open', state.collapsed(row.group) and 'unfold' or 'fold')
+      hint('open', folded(row.group) and 'Unfold' or 'Fold')
     end
   elseif row and (row.kind == 'more' or row.kind == 'older') then
-    hint('open', 'show them')
+    hint('open', 'Show Them')
   elseif row and row.kind == 'hit' then
-    hint('open', 'read this passage')
+    hint('open', 'Read This Passage')
   elseif row and row.chat then
     local chat = row.chat
-    local word = M.open_words(chat)
-    hint('open', word)
+    hint('open', (M.open_words(chat)))
     if not chat.subagent then
       -- Why Enter only reads it, where it does.
-      local _, why = reachable(chat)
+      local why = out_of_reach(chat)
       if why == 'background' then
         note = { 'answering in the background', 'in the background' }
       elseif why == 'elsewhere' then
@@ -1497,91 +1546,282 @@ local function row_hints(win)
       if queued > 0 then
         -- (What the key leads to, as "conversation" is: said as a state,
         -- it read as one.)
-        hint('queue', ('queued replies (%d)'):format(queued))
+        hint('queue', ('Queued Replies (%d)'):format(queued))
       elseif
         why ~= 'elsewhere'
         and why ~= 'background'
         and (chat.status == 'working' or chat.status == 'attention')
       then
-        hint('queue', 'queue a reply')
+        hint('queue', 'Queue a Reply')
       end
+      -- Named on every chat there is something to read of, also where
+      -- Enter does no more than read it: the key is always in its place.
       if not chat.stub then
-        if word ~= 'read' then
-          hint('read', 'conversation')
-        end
-        hint('pass', 'pass to agent')
+        hint('read', 'Conversation')
       end
     end
-  else
-    hint('new', 'new chat')
-    hint('search', 'search')
   end
   return out, note
 end
 
---- A statusline string: the hints that fit in `width`, and the way to
---- everything else at the right edge, which is never left out. `note` goes
---- after the hints when there is room for it.
-local function bar_text(hints, width, note)
+--- The hints that are the same on every row, for the right of the bar:
+--- what can be done with the list as a whole. With a search on, the ways
+--- out of it and to another.
+---@return table[]
+local function list_hints()
+  local out = {}
+  local function hint(action, label, more)
+    local key = keys.key(action)
+    if key then
+      out[#out + 1] = vim.tbl_extend('force', { key, label }, more or {})
+    end
+    return key
+  end
+  if S.search then
+    -- The key that changes the search gives way before the one that ends it.
+    if not hint('back', 'End Search', { short = 'End', drop = 8 }) then
+      hint('clear', 'End Search', { short = 'End', drop = 8 })
+    end
+    hint('search', 'New Search')
+  else
+    hint('new', 'New Chat', { short = 'New', drop = 8 })
+    hint('search', 'Search')
+    -- The list keeps itself up to date: the key for doing it now is the
+    -- first to give way.
+    hint('refresh', 'Refresh', { drop = 2 })
+  end
+  return out
+end
+
+--- The hints for the view the cursor is in, in the pane; nil when the
+--- keys there are those of the list (the summary: they act on the chat it
+--- shows).
+---@return table[]? hints, string[]? note, table|false|nil menu
+local function pane_hints()
+  local win = S.pane_win
+  if not (valid_win(win) and api.nvim_get_current_win() == win) then
+    return nil
+  end
+  local buf = api.nvim_win_get_buf(win)
+  if S.pane_mode == 'term' then
+    -- The way back to the list that works in the mode the terminal is in:
+    -- one key while typing, another in its normal mode. Closing the
+    -- window goes back whatever is mapped: with no key, that is named.
+    local typing, normal = prepare_terminal(buf)
+    local from_normal = normal and keys.name(normal) or ':q'
+    local hints
+    if M._typing() then
+      -- With no key of its own, typing has to be left first.
+      hints = typing and { { typing, 'Back' } }
+        or { { [[<C-\><C-n>]], ('then %s Back'):format(from_normal) } }
+    else
+      hints = { { from_normal, 'Back' } }
+    end
+    -- The agent has stopped and its screen is kept (it failed, or
+    -- `open.close_on_exit` is off).
+    local code = vim.b[buf].agent_chats_exited
+    local note = code and { ('the agent has exited, code %s'):format(code), 'exited' } or nil
+    return hints, note, false
+  end
+  local fn = S.pane_hints_fn
+  if fn then
+    -- A conversation, a diff: asked what keys it has now.
+    local ok, hints = pcall(fn)
+    if ok and type(hints) == 'table' then
+      return hints, nil, hints.menu and { hints.menu, 'Menu' } or false
+    end
+  end
+  return nil
+end
+
+--- A statusline string for the bar: `left` are the keys of what the cursor
+--- is on, with `note` after them; `right` the keys that are always there;
+--- `menu` the way to everything else, at the right edge.
+---
+--- A hint is `{ key, label }`, with `short` for a label that can be said
+--- in fewer cells and `drop` for when it gives way (the lowest number
+--- first, and of two the later one).
+---
+--- The right side is settled first, with room kept for the left whatever
+--- the row under the cursor needs: so the keys that are always there stay
+--- where they are as the cursor goes from row to row. `reserve` cells are
+--- kept (for the two keys every chat has) while only the key that is
+--- needed least has to go for that (2) and long labels to be shortened
+--- (3). Where that is not enough, `least` cells are kept (for what Enter
+--- does), and then the keys of the list go (6), and last what starts a
+--- chat or ends a search (8): on a narrow list a new chat and the search
+--- are named before the conversation is. The way to the menu stays.
+---
+--- The left side has what room that leaves: the note is said in short
+--- (1), then not at all (4); then the other keys of the row go, the last
+--- one first (5); what Enter does is the last to go (9).
+local function bar_text(width, left, note, right, menu, reserve, least)
   local function esc(s)
     return (s:gsub('%%', '%%%%'))
   end
-  local menu = keys.key('menu')
-  local right = menu and { menu, 'menu' } or { config.command('menu'), '' }
-  local function cells(h)
-    return text.width(h[1]) + (h[2] ~= '' and 1 + text.width(h[2]) or 0)
+  local function label(part)
+    return part.short and part.hint.short or part.hint[2]
   end
-  local right_w = cells(right) + 1
-  --- The hints that fit when `reserved` cells are kept free behind them.
-  local function fit(reserved)
-    local parts, used = {}, 1
-    for i, h in ipairs(hints) do
-      local need = cells(h) + (i > 1 and 2 or 0)
-      if used + need + 2 + right_w + reserved > width then
-        break
+  local function cells(part)
+    if part.note then
+      return text.width(part.note[part.at]) + 2
+    end
+    local words = label(part)
+    return text.width(part.hint[1]) + (words ~= '' and 1 + text.width(words) or 0)
+  end
+  --- The cells `parts` take side by side.
+  local function span(parts)
+    local w = 0
+    for _, part in ipairs(parts) do
+      if not part.gone then
+        -- (A note stands a little apart from the keys.)
+        w = w + cells(part) + (w > 0 and (part.note and 3 or 2) or 0)
       end
-      used = used + need
-      parts[#parts + 1] = ('%s%%#AgentChatsKey#%s%%* %s'):format(
-        i > 1 and '  ' or '',
-        esc(h[1]),
-        esc(h[2])
-      )
     end
-    return parts, used
+    return w
   end
-  -- Why a chat cannot be gone into ("runs elsewhere") is said before the
-  -- less used keys are named: room is kept for its short form. Only the
-  -- first key, what Enter does instead, comes before it.
-  local short = note and note[#note] or nil
-  local parts, used = fit(short and (text.width(short) + 5) or 0)
-  if short and #parts == 0 and #hints > 0 then
-    parts, used = fit(0)
-    note = nil
-  end
-  -- In full where that fits, else in short.
-  for _, words in ipairs(note or {}) do
-    if used + text.width(words) + 5 + 2 + right_w <= width then
-      parts[#parts + 1] = ('%s%%#AgentChatsDim#(%s)%%*'):format(
-        #parts > 0 and '   ' or '',
-        esc(words)
-      )
-      break
+  --- Say `parts` in fewer cells, step by step, until `fits`; no step past
+  --- `upto` is taken.
+  local function reduce(parts, fits, upto)
+    while not fits() do
+      local worst, how, rank
+      for _, part in ipairs(parts) do
+        if not part.gone and not part.keep then
+          local can
+          if part.note then
+            can = part.at < #part.note
+          else
+            can = part.hint.short ~= nil and not part.short
+          end
+          local r = can and part.shrink or part.drop
+          if not rank or r <= rank then
+            worst, how, rank = part, can and 'shrink' or 'drop', r
+          end
+        end
+      end
+      if not worst or (upto and rank > upto) then
+        return
+      end
+      if how == 'drop' then
+        worst.gone = true
+      elseif worst.note then
+        worst.at = worst.at + 1
+      else
+        worst.short = true
+      end
     end
   end
-  return (' %s%%=%%#AgentChatsKey#%s%%*%s '):format(
-    table.concat(parts),
-    esc(right[1]),
-    right[2] ~= '' and (' ' .. esc(right[2])) or ''
-  )
+
+  local rights = {}
+  for _, h in ipairs(right) do
+    rights[#rights + 1] = { hint = h, shrink = 3, drop = h.drop or 6 }
+  end
+  if menu then
+    rights[#rights + 1] = { hint = menu, keep = true }
+  end
+  local lefts = {}
+  for i, h in ipairs(left) do
+    lefts[#lefts + 1] = { hint = h, shrink = 3, drop = h.drop or (i == 1 and 9 or 5) }
+  end
+  least = math.max(least or 0, lefts[1] and cells(lefts[1]) or 0)
+  reserve = math.max(reserve or 0, least)
+  if note then
+    lefts[#lefts + 1] = { note = note, at = 1, shrink = 1, drop = 4 }
+  end
+  -- A cell at each edge, and two between the sides where there are two.
+  local function beside(kept)
+    return function()
+      local w = span(rights)
+      return 2 + kept + ((w > 0 and kept > 0) and 2 or 0) + w <= width
+    end
+  end
+  reduce(rights, beside(reserve), 3)
+  if not beside(reserve)() then
+    reduce(rights, beside(least))
+  end
+  local right_w = span(rights)
+  reduce(lefts, function()
+    local w = span(lefts)
+    return w == 0 or 2 + w + (right_w > 0 and 2 or 0) + right_w <= width
+  end)
+
+  local out = { ' ' }
+  local function say(parts)
+    local any = false
+    for _, part in ipairs(parts) do
+      if not part.gone and part.note then
+        out[#out + 1] = ('%s%%#AgentChatsDim#(%s)%%*'):format(
+          any and '   ' or '',
+          esc(part.note[part.at])
+        )
+        any = true
+      elseif not part.gone then
+        local words = label(part)
+        out[#out + 1] = ('%s%%#AgentChatsKey#%s%%*%s'):format(
+          any and '  ' or '',
+          esc(part.hint[1]),
+          words ~= '' and (' ' .. esc(words)) or ''
+        )
+        any = true
+      end
+    end
+  end
+  say(lefts)
+  out[#out + 1] = '%='
+  say(rights)
+  out[#out + 1] = ' '
+  return table.concat(out)
 end
 
+--- Bring the bar above the list up to date. It is the one place that
+--- names keys, and it names those of where the cursor is: of the row it is
+--- on in the list; of the chat, the conversation or the diff it is in, in
+--- the pane.
 update_bar = function()
   if not M.is_open() then
     return
   end
+  local menu_key = keys.key('menu')
+  local list_menu = menu_key and { menu_key, 'Menu' } or { config.command('menu'), '' }
+  local in_pane, pane_note, pane_menu = pane_hints()
+  -- What the two keys every chat has take, kept free at the left on every
+  -- row: the keys at the right do not move as the cursor does.
+  local open_key, read_key = keys.key('open'), keys.key('read')
+  local least = open_key and (text.width(open_key) + 7) or 0
+  local reserve = least + (read_key and (text.width(read_key) + 15) or 0)
   for _, win in ipairs(vim.fn.win_findbuf(S.buf)) do
-    local hints, note = row_hints(win)
-    local bar = bar_text(hints, api.nvim_win_get_width(win), note)
+    local width = api.nvim_win_get_width(win)
+    local bar
+    if S.typing then
+      -- A search is being typed at the prompt: the keys that count are
+      -- the prompt's own, and they are not the board's to choose.
+      bar = bar_text(
+        width,
+        { { 'Enter', 'Keep Search', short = 'Keep' }, { 'Esc', 'Cancel', drop = 8 } },
+        nil,
+        {},
+        nil
+      )
+    elseif in_pane then
+      bar = bar_text(width, in_pane, pane_note, {}, pane_menu or nil)
+    else
+      local hints, note = row_hints(win)
+      if S.pane_mode == 'preview' and api.nvim_get_current_win() == S.pane_win and not S.intro then
+        -- In the summary the keys are the list's, but for the one that
+        -- goes back: there it leads to the list. (With no key of its own
+        -- there, the command is the way.)
+        local buf = api.nvim_win_get_buf(S.pane_win)
+        local back = config.command()
+        for _, lhs in ipairs(keys.wanted('back')) do
+          if keys.is_ours(buf, 'n', lhs) then
+            back = keys.name(lhs)
+            break
+          end
+        end
+        hints[#hints + 1] = { back, 'Back' }
+      end
+      bar = bar_text(width, hints, note, list_hints(), list_menu, reserve, least)
+    end
     if vim.wo[win].winbar ~= bar then
       vim.wo[win].winbar = bar
     end
@@ -1615,84 +1855,11 @@ local function set_pane_options(mode)
   end
 end
 
---- Title the pane: `label` on the left, `right` (the way back, where there
---- is one) at the right edge.
-local function pane_title(label, hl, right)
-  if valid_win(S.pane_win) then
-    local function esc(str)
-      return (str:gsub('%%', '%%%%'))
-    end
-    vim.wo[S.pane_win].winbar = ('%%#%s# %s%s %%*'):format(
-      hl or 'AgentChatsDim',
-      esc(label),
-      right and ('%=' .. esc(right)) or ''
-    )
-  end
-end
-
---- Cells the pane's title has for its words, beside `right`.
-local function title_room(right)
-  local width = valid_win(S.pane_win) and api.nvim_win_get_width(S.pane_win) or 60
-  return width - 2 - (right and (text.width(right) + 2) or 0)
-end
-
---- The title of a view in the pane: what it is, then its keys, as many as
---- fit. `hints` are `{ text, rank }` in the order they are shown; the ones
---- of the highest rank go first when there is no room, and the name of the
---- view goes before the last key does.
----@param lead string
----@param hints { [1]: string, [2]: integer }[]
----@return string
-local function view_title(lead, hints)
-  local room = title_room()
-  local kept = vim.deepcopy(hints)
-  local function words(with_lead)
-    local parts = {}
-    for _, h in ipairs(kept) do
-      parts[#parts + 1] = h[1]
-    end
-    local keys_ = table.concat(parts, ' · ')
-    if not with_lead then
-      return keys_
-    end
-    return keys_ == '' and lead or (lead .. '   ' .. keys_)
-  end
-  while #kept > 1 and text.width(words(true)) > room do
-    local worst = 1
-    for i, h in ipairs(kept) do
-      if h[2] >= kept[worst][2] then
-        worst = i
-      end
-    end
-    table.remove(kept, worst)
-  end
-  if text.width(words(true)) > room and #kept > 0 then
-    return words(false)
-  end
-  return words(true)
-end
-
---- Title the pane for the view in it (a conversation, a diff) from what
---- that view says of itself now: the keys it names are the ones it still
---- has.
-local function retitle_view()
-  local fn = S.pane_title_fn
-  if fn and valid_win(S.pane_win) then
-    local ok, title = pcall(fn)
-    if ok and type(title) == 'table' then
-      pane_title(view_title(title[1], title[2]), 'AgentChatsHeader')
-    end
-  end
-end
-
 --- Whether the cursor is typing in a terminal (terminal mode) right now.
 function M._typing()
   return api.nvim_get_mode().mode == 't'
 end
 
---- A terminal that holds a chat is about to be shown or entered: give it
---- the ways back to the list, once, and then let the user's own setup at it.
----@return string? typing, string? normal  The keys that go back from it: while typing, and in its normal mode.
 -- Window commands, and where each leads inside the floating board.
 local FLOAT_MOVES = {
   h = 'list',
@@ -1744,9 +1911,52 @@ local function window_keys(buf)
   end
 end
 
-local function prepare_terminal(buf)
+--- A terminal that holds a chat is about to be shown or entered: give it
+--- the ways back to the list, once, and then let the user's own setup at it.
+---@return string? typing, string? normal  The keys that go back from it: while typing, and in its normal mode.
+prepare_terminal = function(buf)
   window_keys(buf)
   return require('agent-chats.term').prepare(buf)
+end
+
+-- What Neovim says when a buffer comes to be shown in a window and when it
+-- goes from the last one, and what it says when the cursor changes buffer
+-- or window.
+local SHOWN = 'BufWinEnter,BufWinLeave,BufHidden'
+local ENTERED = 'BufEnter,BufLeave,WinEnter,WinLeave'
+
+--- Call `fn` with the autocommands for `events` held back.
+local function quietly(events, fn, ...)
+  local had = vim.o.eventignore
+  vim.o.eventignore = had == '' and events or (had .. ',' .. events)
+  local ok, err = pcall(fn, ...)
+  vim.o.eventignore = had
+  if not ok then
+    error(err, 0)
+  end
+  return err
+end
+
+--- Put `buf` in the pane.
+---
+--- The pane is the board's own window. A buffer shown there has not been
+--- opened in a window of the user's, and one taken out of it has not been
+--- hidden by them: "BufWinEnter", "BufWinLeave" and "BufHidden" are not
+--- said. (A config that keeps a terminal's window for that terminal marks
+--- the window on the first of these, and from then on puts the terminal
+--- back whenever another buffer lands there: the pane would be stuck on
+--- one chat, with a warning for every move of the cursor.)
+---
+--- With the cursor somewhere else, nothing is entered either. Neovim says
+--- "BufEnter" all the same for a buffer put into a window the cursor is
+--- not in, and a common autocommand answers that for a terminal by
+--- starting to type: the list would be typed into.
+local function pane_set_buf(buf)
+  local events = SHOWN
+  if api.nvim_get_current_win() ~= S.pane_win then
+    events = events .. ',' .. ENTERED
+  end
+  quietly(events, api.nvim_win_set_buf, S.pane_win, buf)
 end
 
 --- The summary buffer, made anew when the one there is gone or no longer
@@ -1765,51 +1975,15 @@ local function summary_buf()
     -- Out of every window first: deleting a buffer closes the windows
     -- that show it, and the pane is one of them.
     for _, win in ipairs(vim.fn.win_findbuf(old)) do
-      pcall(api.nvim_win_set_buf, win, S.preview_buf)
+      if win == S.pane_win then
+        pcall(pane_set_buf, S.preview_buf)
+      else
+        pcall(api.nvim_win_set_buf, win, S.preview_buf)
+      end
     end
     pcall(api.nvim_buf_delete, old, { force = true })
   end
   return S.preview_buf
-end
-
---- `agent · name · folder` in at most `room` cells. The folder gives way
---- first (from its start: the end of a path says the most), then the
---- agent; the name of the chat is the last to go.
-local function fit_label(agent, name, dir, room)
-  room = room or 200
-  local beside = room - text.width(agent) - 3
-  if beside < 8 then
-    -- Not even room for the agent beside it.
-    return text.truncate(name, math.max(1, room))
-  end
-  local rest = beside - 3
-  if dir and rest >= 16 then
-    -- Half each at the least, and what one does not need goes to the other.
-    local name_w =
-      math.min(text.width(name), math.max(math.floor(rest / 2), rest - text.width(dir)))
-    local dir_w = rest - name_w
-    if dir_w >= 8 then
-      return table.concat(
-        { agent, text.truncate(name, name_w), text.truncate_left(dir, dir_w) },
-        ' · '
-      )
-    end
-  end
-  -- No room for the folder: it is on the row and in the summary.
-  return agent .. ' · ' .. text.truncate(name, beside)
-end
-
---- What a terminal is: the agent, the chat, and the folder it runs in.
-local function term_label(chat, room)
-  if not chat then
-    return ''
-  end
-  return fit_label(
-    providers.label(chat.provider),
-    display.title(chat),
-    chat.cwd and fs.tilde(chat.cwd) or nil,
-    room
-  )
 end
 
 --- The chat that terminal `buf` holds, as far as the index knows.
@@ -1822,34 +1996,73 @@ local function chat_in(buf)
   return nil
 end
 
---- Title the pane for a terminal the cursor is in: which chat it is, and
---- the way back to the list that works in the mode the terminal is in:
---- one key while typing, another in its normal mode.
----@param label string|table|nil  A chat, `{ agent, name, dir }`, or plain words.
-local function term_title(buf, label, lead, hl)
-  local typing, normal = prepare_terminal(buf)
-  -- Closing the window goes back whatever is mapped: with no key, that is
-  -- what the title says.
-  local from_normal = normal and keys.name(normal) or ':q'
-  local right
-  if M._typing() then
-    -- With no key of its own, typing has to be left first.
-    right = typing and (typing .. ' back') or ([[<C-\><C-n> then %s back]]):format(from_normal)
-  else
-    right = from_normal .. ' back'
+--- The chat the pane is showing, by its key (and, for a subagent, the key
+--- of the chat it belongs to); nil when the pane shows none.
+---@return string?, string?
+local function pane_chat()
+  if not (M.is_open() and valid_win(S.pane_win)) then
+    return nil
   end
-  lead = lead or 'LIVE  '
-  -- A gap before the key, however full the title is.
-  local room = title_room(right) - text.width(lead) - 1
-  local words
-  if type(label) == 'table' and label.key then
-    words = term_label(label, room)
-  elseif type(label) == 'table' then
-    words = fit_label(label.agent or '', label.name or '', label.dir and fs.tilde(label.dir), room)
-  else
-    words = text.truncate(label or '', math.max(8, room))
+  local buf = api.nvim_win_get_buf(S.pane_win)
+  if S.pane_mode == 'term' then
+    local chat = chat_in(buf)
+    local known = require('agent-chats.term').terms[buf]
+    return chat and chat.key or (known and known.key) or nil
+  elseif S.pane_mode == 'conversation' or S.pane_mode == 'diff' then
+    return vim.b[buf].agent_chats_key, vim.b[buf].agent_chats_parent
+  elseif S.pane_shown == 'intro' then
+    return nil
   end
-  pane_title(lead .. words, hl or 'AgentChatsLive', right)
+  -- A summary is of the row the list's cursor is on.
+  local row = S.rows[api.nvim_win_get_cursor(S.win)[1]]
+  return row and row.chat and row.chat.key or nil
+end
+
+--- Mark the row of the chat that is in the pane: a bar at its left edge,
+--- and the whole line set off. Whatever the pane shows of it (its live
+--- terminal, its summary, its conversation), and wherever the cursor is:
+--- from inside a chat, a glance at the list says which one it is. The
+--- cursor line alone does not: many colorschemes draw it faintly or not at
+--- all, and many configs take it away in a window the cursor is not in.
+mark_shown = function()
+  if not M.is_open() then
+    return
+  end
+  api.nvim_buf_clear_namespace(S.buf, ns_shown, 0, -1)
+  local key, parent = pane_chat()
+  if not key then
+    return
+  end
+  local at = api.nvim_win_get_cursor(S.win)[1]
+  local line
+  if S.rows[at] and S.rows[at].chat and S.rows[at].chat.key == key then
+    -- The row the cursor is on is of that chat (it may be a passage a
+    -- search found in it).
+    line = at
+  else
+    -- Its own row; for a subagent that is not listed, the row of the chat
+    -- it belongs to.
+    for _, wanted in ipairs({ key, parent or false }) do
+      for i, row in ipairs(S.rows) do
+        if wanted and row.kind == 'chat' and row.chat.key == wanted then
+          line = i
+          break
+        end
+      end
+      if line then
+        break
+      end
+    end
+  end
+  if not line then
+    return
+  end
+  local bar = config.get().icons.shown
+  pcall(api.nvim_buf_set_extmark, S.buf, ns_shown, line - 1, 0, {
+    virt_text = (type(bar) == 'string' and bar ~= '') and { { bar, 'AgentChatsShownMark' } } or nil,
+    virt_text_pos = 'overlay',
+    line_hl_group = 'AgentChatsShown',
+  })
 end
 
 local function open_pane()
@@ -1868,7 +2081,7 @@ local function open_pane()
       return
     end
     api.nvim_win_set_config(S.win, { width = list_w })
-    S.pane_win = api.nvim_open_win(S.preview_buf, false, {
+    S.pane_win = quietly(SHOWN, api.nvim_open_win, S.preview_buf, false, {
       relative = 'editor',
       row = d.row,
       col = d.col + list_w + 2,
@@ -1882,7 +2095,7 @@ local function open_pane()
     })
   else
     local total = api.nvim_win_get_width(S.win)
-    S.pane_win = api.nvim_open_win(S.preview_buf, false, {
+    S.pane_win = quietly(SHOWN, api.nvim_open_win, S.preview_buf, false, {
       split = 'right',
       win = S.win,
       width = math.max(1, math.min(total - 1, math.max(20, math.floor(total * cfg.pane_size)))),
@@ -1905,7 +2118,8 @@ local function close_pane()
   if valid_win(S.pane_win) then
     local win = S.pane_win
     S.pane_win = nil
-    pcall(api.nvim_win_close, win, true)
+    -- (What it showed goes out of sight as it came: without a word.)
+    quietly(SHOWN, pcall, api.nvim_win_close, win, true)
     if S.layout == 'float' and valid_win(S.win) then
       local dims = M._float_dims()
       api.nvim_win_set_config(S.win, { width = dims.width })
@@ -1914,34 +2128,10 @@ local function close_pane()
   S.pane_win = nil
 end
 
---- Put `buf` in the pane while the cursor is somewhere else. Neovim says
---- "BufEnter" for a buffer that is put into a window the cursor is not in,
---- and a common autocommand answers that for a terminal by starting to
---- type: the list would be typed into. Nothing was entered, so nothing
---- is said.
-local function pane_set_buf(buf)
-  if api.nvim_get_current_win() == S.pane_win then
-    return api.nvim_win_set_buf(S.pane_win, buf)
-  end
-  local had = vim.o.eventignore
-  local quiet = 'BufEnter,BufLeave,WinEnter,WinLeave'
-  vim.o.eventignore = had == '' and quiet or (had .. ',' .. quiet)
-  local ok, err = pcall(api.nvim_win_set_buf, S.pane_win, buf)
-  vim.o.eventignore = had
-  if not ok then
-    error(err, 0)
-  end
-end
-
-update_pane = function()
-  if not S.pane_on or not valid_win(S.pane_win) or not M.is_open() then
-    return
-  end
-  -- The pane follows the cursor only while the list has focus; otherwise
-  -- the user is in it (typing to an agent, reading a conversation).
-  if api.nvim_win_get_buf(api.nvim_get_current_win()) ~= S.buf then
-    return
-  end
+--- Show in the pane what the row under the list's cursor stands for: the
+--- live terminal of its chat when the pane is the place for that, else a
+--- summary.
+local function show_row()
   local chat, row = M.current()
   if S.intro then
     -- Shown until the cursor is moved to another row, and only this once.
@@ -1957,14 +2147,22 @@ update_pane = function()
         pane_set_buf(buf)
       end
       set_pane_options('preview')
-      pane_title('Welcome')
       S.pane_shown = 'intro'
+      mark_shown()
       return
     end
     S.intro = false
   end
-  local term = chat and require('agent-chats.term').find(chat) or nil
-  S.pane_title_fn = nil
+  local terms = require('agent-chats.term')
+  local term = chat and terms.find(chat) or nil
+  if term and terms.window_of(term) then
+    -- On screen already, in a window of the user's: it stays there, and
+    -- the summary says where (see `window_of` on why not twice). The way
+    -- back to the list is given to it all the same: Enter leads there.
+    prepare_terminal(term)
+    term = nil
+  end
+  S.pane_hints_fn = nil
   -- What the pane is about. While that stays the same a refresh must not
   -- move the pane's view: the user may have scrolled it.
   local shown = (term and 'term:' or 'summary:') .. tostring(row and row.id)
@@ -1983,10 +2181,19 @@ update_pane = function()
     if moved then
       pcall(api.nvim_win_set_cursor, S.pane_win, { api.nvim_buf_line_count(term), 0 })
     end
-    pane_title('LIVE  ' .. term_label(chat, title_room() - 6), 'AgentChatsLive')
   else
+    -- No terminal in front of you now: one that comes back starts its
+    -- couple of seconds again (see `M.is_showing`).
+    S.shown_term = nil
     local buf = summary_buf()
-    preview.render(buf, chat, row, S.rows, api.nvim_win_get_width(S.pane_win))
+    preview.render(
+      buf,
+      chat,
+      row,
+      S.rows,
+      api.nvim_win_get_width(S.pane_win),
+      api.nvim_win_get_tabpage(S.pane_win)
+    )
     if api.nvim_win_get_buf(S.pane_win) ~= buf then
       pane_set_buf(buf)
       moved = true
@@ -1995,7 +2202,36 @@ update_pane = function()
     if moved then
       pcall(api.nvim_win_set_cursor, S.pane_win, { 1, 0 })
     end
-    pane_title('Summary')
+  end
+  mark_shown()
+end
+
+update_pane = function()
+  if not S.pane_on or not valid_win(S.pane_win) or not M.is_open() then
+    return
+  end
+  -- The pane follows the cursor only while the list has focus; otherwise
+  -- the user is in it (typing to an agent, reading a conversation).
+  if api.nvim_win_get_buf(api.nvim_get_current_win()) ~= S.buf then
+    return
+  end
+  show_row()
+end
+
+--- A terminal the pane shows has come to be shown in another window as
+--- well (the user brought their own terminal up again, in their own
+--- place): the pane lets go of it, for the summary. Not with the cursor
+--- in the pane: whoever is typing there is not thrown out.
+local function let_go()
+  if
+    M.is_open()
+    and S.pane_mode == 'term'
+    and valid_win(S.pane_win)
+    and api.nvim_get_current_win() ~= S.pane_win
+    and require('agent-chats.term').window_of(api.nvim_win_get_buf(S.pane_win))
+  then
+    S.pane_shown = nil
+    show_row()
   end
 end
 
@@ -2012,6 +2248,12 @@ local function schedule_pane()
       -- The first line names keys as well.
       return M.render()
     end
+    if M.is_open() and hold_left() then
+      -- The chat that was read while the cursor was on it goes where it
+      -- belongs now.
+      return M.render()
+    end
+    hold_row()
     update_bar()
     update_pane()
   end)
@@ -2042,12 +2284,13 @@ function M.no_room()
   )
 end
 
---- Show `buf` in the pane and move the cursor there. `label` names what a
---- terminal runs, for a terminal that is not registered yet.
+--- Show `buf` in the pane and move the cursor there. The pane has no title
+--- of its own: what it shows says what it is, the list marks the row of
+--- the chat it belongs to, and the keys of the view are on the bar above
+--- the list for as long as the cursor is in it.
 ---@param mode "term"|"conversation"|"diff"
----@param title (string|table|fun(): table)?  Words; `{ name, hints }` to fit to the pane (see `view_title`); or a function that returns that, asked again whenever the keys it names may have changed.
----@param label string?
-function M.pane_show(buf, mode, title, label)
+---@param hints (fun(): table)?  The keys of the view, `{ key, label }` each and `menu` for the key of its menu; asked again whenever they may have changed.
+function M.pane_show(buf, mode, hints)
   local win = M.pane_window()
   if not win then
     -- A terminal goes to a split instead (see term.lua); anything else
@@ -2057,28 +2300,20 @@ function M.pane_show(buf, mode, title, label)
     end
     return nil
   end
-  api.nvim_win_set_buf(win, buf)
+  pane_set_buf(buf)
   set_pane_options(mode)
   window_keys(buf)
   S.pane_shown = nil
   -- Whatever is put in the pane is what the user asked for: the
   -- introduction has had its turn.
   S.intro = false
-  S.pane_title_fn = type(title) == 'function' and title or nil
+  S.pane_hints_fn = type(hints) == 'function' and hints or nil
   if mode == 'term' then
-    if not label then
-      local known = require('agent-chats.term').terms[buf]
-      label = known and (known.label or known.title) or nil
-    end
-    term_title(buf, label)
-  elseif S.pane_title_fn then
-    retitle_view()
-  elseif type(title) == 'table' then
-    pane_title(view_title(title[1], title[2]), 'AgentChatsHeader')
-  elseif title then
-    pane_title(title, 'AgentChatsHeader')
+    prepare_terminal(buf)
   end
+  mark_shown()
   api.nvim_set_current_win(win)
+  update_bar()
   return win
 end
 
@@ -2093,58 +2328,35 @@ function M.follow(buf)
 end
 
 --- The cursor is in the summary: its keys are worked out again (what is
---- mapped may have changed), and its title names the way back.
+--- mapped may have changed), and the bar names the way back.
 function M.summary_entered()
   if not (valid_win(S.pane_win) and S.pane_mode == 'preview') then
     return
   end
   summary_keys()
-  if S.intro then
-    return
-  end
-  local buf = api.nvim_win_get_buf(S.pane_win)
-  local back
-  for _, lhs in ipairs(keys.wanted('back')) do
-    if keys.is_ours(buf, 'n', lhs) then
-      back = back or keys.name(lhs)
-    end
-  end
-  pane_title('Summary', nil, back and (back .. ' back') or (config.command() .. ' goes back'))
+  update_bar()
 end
 
 --- The terminal `buf` in the pane holds a chat the cursor has gone into (or
---- that has only now started in it, or whose mode has changed): its title
---- says which, and how to get back to the list from where it is now.
----@param what agent_chats.Chat|table|string|nil  The chat, `{ agent, name, dir }`, or what to call the terminal; nil: whatever is known of it.
-function M.pane_entered(buf, what)
+--- that has only now started in it, or whose mode has changed): the bar
+--- says how to get back to the list from where it is now.
+function M.pane_entered(buf)
   if valid_win(S.pane_win) and api.nvim_win_get_buf(S.pane_win) == buf then
     S.intro = false
-    if not what then
-      local known = require('agent-chats.term').terms[buf]
-      what = chat_in(buf) or (known and (known.label or known.title)) or nil
-    end
-    if vim.b[buf].agent_chats_exited then
-      return M.pane_ended(buf, vim.b[buf].agent_chats_exited)
-    end
-    term_title(buf, what)
+    update_bar()
   end
 end
 
 --- The agent in a terminal shown in the pane has stopped and its screen is
---- kept (it failed, or `open.close_on_exit` is off): say so, instead of
---- "LIVE".
+--- kept (it failed, or `open.close_on_exit` is off): the bar says so while
+--- the cursor is in it.
 function M.pane_ended(buf, code)
   pcall(function()
-    -- Remembered, so that a title set again later (a mode change) still says so.
+    -- Remembered, so that it is still said after a change of mode.
     vim.b[buf].agent_chats_exited = tostring(code)
   end)
   if valid_win(S.pane_win) and api.nvim_win_get_buf(S.pane_win) == buf then
-    term_title(
-      buf,
-      ('the agent has exited (code %s)'):format(tostring(code)),
-      'ENDED  ',
-      'AgentChatsAttention'
-    )
+    update_bar()
   end
 end
 
@@ -2152,10 +2364,11 @@ end
 --- first, so the window survives.
 function M.release(buf)
   if valid_win(S.pane_win) and api.nvim_win_get_buf(S.pane_win) == buf then
-    api.nvim_win_set_buf(S.pane_win, summary_buf())
+    pane_set_buf(summary_buf())
     set_pane_options('preview')
-    pane_title('Summary')
-    S.pane_shown, S.pane_title_fn = nil, nil
+    S.pane_shown, S.pane_hints_fn = nil, nil
+    mark_shown()
+    update_bar()
     return true
   end
   return false
@@ -2222,8 +2435,15 @@ function M.goto_chat(key)
     for i, row in ipairs(S.rows) do
       if row.kind == 'chat' and row.chat.key == key then
         api.nvim_win_set_cursor(list_win(), { i, 1 })
-        update_bar()
-        update_pane()
+        if hold_left() then
+          -- The row the cursor came from was kept in its place: drawn
+          -- again, it goes where it belongs (and the cursor stays here).
+          M.render()
+        else
+          hold_row()
+          update_bar()
+          update_pane()
+        end
         return true
       end
     end
@@ -2238,93 +2458,12 @@ function M.goto_chat(key)
       S.search = nil
     end
     for _, g in ipairs(build_groups({ chat })) do
-      state.set_collapsed(g.id, false)
+      set_folded(g.id, false)
       S.full[g.id] = true
     end
     M.render()
   end
   return false
-end
-
---- Move to the next (dir 1) or previous (dir -1) chat that wants you, in
---- the order the board lists them. One in a folded group, or past the end
---- of a long one, is counted in the header: so this reaches it, and
---- unfolds what hides it.
-function M.jump_attention(dir)
-  if not M.is_open() then
-    return
-  end
-  -- Where every chat stands in the list: its group, and its place in it.
-  local place, wanted = {}, {}
-  for gi, g in ipairs(build_groups(visible_chats())) do
-    place[g.id] = { gi, 0 }
-    for ci, chat in ipairs(g.chats) do
-      place[chat.key] = { gi, ci }
-      if status.wants_you[chat.status] then
-        wanted[#wanted + 1] = chat
-      end
-    end
-  end
-  if #wanted == 0 then
-    info('No chat needs you right now.')
-    return
-  end
-  local function before(a, b)
-    return a[1] < b[1] or (a[1] == b[1] and a[2] < b[2])
-  end
-  -- Where the cursor stands: on a chat or a heading, or below one.
-  local win = list_win()
-  local here = { 0, 0 }
-  for i = api.nvim_win_get_cursor(win)[1], 1, -1 do
-    local row = S.rows[i]
-    local at = row and ((row.chat and place[row.chat.key]) or (row.group and place[row.group]))
-    if at then
-      here = at
-      break
-    end
-  end
-  local target
-  if dir > 0 then
-    for _, chat in ipairs(wanted) do
-      if before(here, place[chat.key]) then
-        target = chat
-        break
-      end
-    end
-    target = target or wanted[1]
-  else
-    for i = #wanted, 1, -1 do
-      if before(place[wanted[i].key], here) then
-        target = wanted[i]
-        break
-      end
-    end
-    target = target or wanted[#wanted]
-  end
-  local function on_screen()
-    for i, row in ipairs(S.rows) do
-      if row.kind == 'chat' and row.chat.key == target.key then
-        return i
-      end
-    end
-  end
-  local line = on_screen()
-  if not line then
-    -- Unfolding is enough; what narrows the board stays as it is.
-    for _, g in ipairs(build_groups({ target })) do
-      if not S.search then
-        state.set_collapsed(g.id, false)
-      end
-      S.full[g.id] = true
-    end
-    M.render()
-    line = on_screen()
-  end
-  if line then
-    api.nvim_win_set_cursor(win, { line, 1 })
-    update_bar()
-    update_pane()
-  end
 end
 
 --- The text of the search that is on ('' when none is).
@@ -2459,10 +2598,7 @@ function M.search_prompt()
     M.render()
     return
   end
-  if S.search and S.search.query == vim.trim(res) then
-    -- The same text as was shown while typing: only the header changes.
-    M.render()
-  end
+  -- (The same text as was shown while typing: only the header changes.)
   M.search(res)
 end
 
@@ -2498,7 +2634,7 @@ function M.toggle_row()
       info('Groups stay open while search results are shown.')
       return
     end
-    state.set_collapsed(row.group, not state.collapsed(row.group))
+    set_folded(row.group, not folded(row.group))
   elseif row.kind == 'more' then
     S.full[row.group] = true
   elseif row.kind == 'chat' and not row.chat.subagent then
@@ -2548,7 +2684,6 @@ local DESCRIPTIONS = {
   queue = 'queue a reply for when the chat finishes its turn',
   read = 'read the whole conversation',
   new = 'new chat',
-  pass = 'pass the chat to another agent',
   search = 'search chats',
   menu = 'everything that can be done here',
   back = 'back (end the search, close the board)',
@@ -2568,8 +2703,6 @@ local DESCRIPTIONS = {
   pane = 'show or hide the pane',
   show_all = 'show older and archived chats',
   read_all = 'mark every chat read',
-  next_attention = 'next chat that needs you',
-  prev_attention = 'previous chat that needs you',
   scroll_down = 'scroll the pane down',
   scroll_up = 'scroll the pane up',
   refresh = 'look for changes now',
@@ -2635,7 +2768,6 @@ local function handlers()
     new = function(ctx)
       actions.new({ chat = ctx.chat })
     end,
-    pass = on_chat(actions.pass, 'pass on'),
     diff = on_chat(actions.diff, 'show the changes of'),
     search = function()
       require('agent-chats.actions').search()
@@ -2656,14 +2788,30 @@ local function handlers()
     group = M.cycle_group,
     toggle = M.toggle_row,
     pane = M.toggle_pane,
-    unread = on_chat(actions.toggle_unread, 'mark'),
-    read_all = actions.read_all,
+    -- A read mark set by hand is seen to take effect: the chat goes where
+    -- it belongs at once, also from under the cursor.
+    unread = on_chat(function(chat)
+      S.hold = { key = chat.key, free = true }
+      actions.toggle_unread(chat)
+    end, 'mark'),
+    read_all = function(ctx)
+      if ctx.chat then
+        S.hold = { key = ctx.chat.key, free = true }
+      end
+      actions.read_all()
+    end,
     pin = on_chat(actions.pin, 'pin'),
     move = on_chat(function(chat)
       actions.move(chat, function(name)
         -- Seen at once where the list is grouped by status. Where it is
         -- not, nothing on the screen would say that it worked.
-        if name and S.group_by ~= 'status' then
+        if name and config.filtered(chat.cwd) then
+          info(
+            ('It is in “%s”. It stays under “Filtered out” for as long as the options filter its folder out.'):format(
+              name
+            )
+          )
+        elseif name and S.group_by ~= 'status' then
           info(
             ('It is in “%s”. Your own groups are shown when the list is grouped by status.'):format(
               name
@@ -2678,12 +2826,6 @@ local function handlers()
     note = on_chat(actions.note, 'put a note on'),
     rename = on_chat(actions.rename, 'rename'),
     yank = on_chat(actions.yank, 'copy the command of'),
-    next_attention = function()
-      M.jump_attention(1)
-    end,
-    prev_attention = function()
-      M.jump_attention(-1)
-    end,
     scroll_down = function()
       scroll_pane(1)
     end,
@@ -2691,7 +2833,11 @@ local function handlers()
       scroll_pane(-1)
     end,
     refresh = function()
-      store.refresh({ full = true })
+      -- Said when it is done: on a list that was up to date already, the
+      -- key would look dead otherwise.
+      store.refresh({ full = true }, function()
+        info('The list is up to date. It also looks for changes by itself.')
+      end)
     end,
     hooks = function()
       require('agent-chats.ui.hooks').open()
@@ -2736,7 +2882,31 @@ function M.menu_items(ctx)
   if row and row.kind == 'group' then
     part = 'This group'
     if not S.search then
-      item('open', state.collapsed(row.group) and 'Unfold this group' or 'Fold this group')
+      item('open', folded(row.group) and 'Unfold this group' or 'Fold this group')
+    end
+    if row.own then
+      -- A group of yours, as a whole.
+      local name = row.own
+      custom('Rename this group', function()
+        require('agent-chats.actions').rename_group(name, function(new)
+          -- Folded or not as it was, and the cursor on its heading still.
+          local id = S.group_by .. ':own:' .. new
+          set_folded(id, folded(row.group))
+          set_folded(row.group, false)
+          M.render()
+          for i, r in ipairs(S.rows) do
+            if r.kind == 'group' and r.group == id and valid_win(S.win) then
+              pcall(api.nvim_win_set_cursor, S.win, { i, 1 })
+              break
+            end
+          end
+          update_bar()
+          update_pane()
+        end)
+      end)
+      custom('Take every chat out of it (the group is gone then)', function()
+        require('agent-chats.actions').empty_group(name)
+      end)
     end
   elseif row and (row.kind == 'more' or row.kind == 'older') then
     part = 'These chats'
@@ -2771,10 +2941,6 @@ function M.menu_items(ctx)
       item('queue', ('Queued replies (%d): send, add or drop'):format(queued))
     elseif busy and not elsewhere then
       item('queue', 'Queue a reply for when it finishes its turn')
-    end
-    -- Passing a chat on is there only where it has been given a key.
-    if not chat.stub and #keys.wanted('pass') > 0 then
-      item('pass', 'Pass to another agent, with notes')
     end
     if chat.cwd and fs.is_dir(chat.cwd) then
       item('diff', 'Show what changed in its folder')
@@ -2816,7 +2982,7 @@ function M.menu_items(ctx)
       item('back', 'Back to the list')
     end
     if ctx.view == 'conversation' then
-      -- What moves in the conversation itself: its title names these keys
+      -- What moves in the conversation itself: the bar names these keys
       -- only where there is room for them.
       part = 'This conversation'
       item('next_prompt', 'Go to the next prompt')
@@ -2863,10 +3029,6 @@ function M.menu_items(ctx)
   )
   if store.counts().done > 0 then
     item('read_all', 'Mark every chat read')
-  end
-  if store.counts().attention + store.counts().done > 0 then
-    item('next_attention', 'Go to the next chat that needs you')
-    item('prev_attention', 'Go to the previous chat that needs you')
   end
 
   part = 'The board'
@@ -3056,7 +3218,7 @@ function M.rekey()
     elseif S.pane_mode == 'preview' then
       M.summary_entered()
     else
-      retitle_view()
+      update_bar()
     end
   end
 end
@@ -3179,9 +3341,10 @@ local function cleanup()
   S.expanded, S.full = {}, {}
   S.placed, S.pane_shown, S.saved_wo = false, nil, nil
   S.intro, S.intro_row = false, nil
-  S.keys, S.at, S.follow = nil, nil, nil
+  S.keys, S.at, S.follow, S.hold = nil, nil, nil, nil
+  S.shown_term, S.shown_since = nil, nil
   S.settled, S.auto_line = nil, nil
-  S.summary_for, S.summary_book, S.pane_title_fn = nil, nil, nil
+  S.summary_for, S.summary_book, S.pane_hints_fn = nil, nil, nil
 end
 
 --- Close the board. Terminals shown in it keep running.
@@ -3197,6 +3360,22 @@ function M.close()
   -- it: closed from another tab (`:Chats close`), it goes and the cursor
   -- stays where it is.
   local in_its_tab = tab ~= nil and api.nvim_get_current_tabpage() == tab
+  local cur = api.nvim_get_current_win()
+  local inside = cur == win or cur == pane
+  -- The pane goes first, while what it shows is still what the board put
+  -- there, and as quietly as that came: a chat's terminal goes out of
+  -- sight without being said to have left a window of the user's. (Left
+  -- for last, it would also be given some other buffer for a moment, when
+  -- the summary it shows is deleted under it.)
+  if valid_win(pane) then
+    if cur == pane and valid_win(win) then
+      -- To the list from the pane, so that closing the pane does not send
+      -- the cursor anywhere else on the way out.
+      pcall(quietly, ENTERED, api.nvim_set_current_win, win)
+    end
+    S.pane_win = nil
+    pcall(quietly, SHOWN, api.nvim_win_close, pane, true)
+  end
   cleanup()
   if layout == 'tab' and tab and api.nvim_tabpage_is_valid(tab) then
     if #api.nvim_list_tabpages() > 1 then
@@ -3244,8 +3423,6 @@ function M.close()
     -- Back to where the board was opened from, but only for someone who
     -- is still in it. A chat opened from it into a split or a tab has the
     -- cursor already, and keeps it.
-    local cur = api.nvim_get_current_win()
-    local inside = cur == win or cur == pane
     for _, w in ipairs({ pane, win }) do
       if valid_win(w) then
         pcall(api.nvim_win_close, w, true)
@@ -3372,7 +3549,7 @@ local function open_board(opts)
     group = group,
     callback = function()
       -- A command may have made a mapping or taken one away (`:nnoremap
-      -- <buffer> R ...` typed on the list): what the screen says of the
+      -- <buffer> C ...` typed on the list): what the screen says of the
       -- keys follows at once, not at the next move of the cursor.
       vim.schedule(function()
         if M.is_open() and api.nvim_get_current_buf() == S.buf and set_keys(S.buf) then
@@ -3381,14 +3558,27 @@ local function open_board(opts)
       end)
     end,
   })
+  api.nvim_create_autocmd('BufWinEnter', {
+    group = group,
+    callback = function(ev)
+      if
+        S.pane_mode == 'term'
+        and valid_win(S.pane_win)
+        and api.nvim_win_get_buf(S.pane_win) == ev.buf
+      then
+        -- (When whatever brought it up has finished with its windows.)
+        vim.schedule(let_go)
+      end
+    end,
+  })
   api.nvim_create_autocmd('ModeChanged', {
     group = group,
     callback = function()
-      -- Into or out of typing in a chat's terminal: its title names the
-      -- key that goes back in the mode it is in now.
+      -- Into or out of typing in a chat's terminal: the bar names the key
+      -- that goes back in the mode it is in now.
       local win = api.nvim_get_current_win()
       if win == S.pane_win and S.pane_mode == 'term' then
-        M.pane_entered(api.nvim_win_get_buf(win))
+        update_bar()
       end
     end,
   })
@@ -3400,13 +3590,16 @@ local function open_board(opts)
         -- What is mapped may have changed while the cursor was away.
         set_keys(S.buf)
         schedule_pane()
-      elseif win == S.pane_win and S.pane_mode == 'term' then
-        -- Gone into the chat with a window command rather than through the
-        -- list: its title says how to get back all the same.
-        M.pane_entered(api.nvim_win_get_buf(win))
       elseif win == S.pane_win and S.pane_mode == 'preview' then
-        -- In the summary: the same.
+        -- In the summary: its keys are looked at again, and the bar names
+        -- the way back.
         M.summary_entered()
+      elseif win == S.pane_win then
+        -- Gone into the chat (or the conversation) with a window command
+        -- rather than through the list: the bar says how to get back all
+        -- the same.
+        S.intro = false
+        update_bar()
       elseif S.layout == 'float' and api.nvim_win_get_config(win).relative == '' then
         -- Focus left the floating board for a normal window: get out of the way.
         vim.schedule(function()
@@ -3414,6 +3607,9 @@ local function open_board(opts)
             M.close()
           end
         end)
+      else
+        -- Out of the board: the bar is about the list again.
+        update_bar()
       end
     end,
   })
@@ -3503,6 +3699,8 @@ local function open_board(opts)
         local was_in = api.nvim_get_current_win() == closed
         local view = S.pane_mode == 'term' or S.pane_mode == 'conversation' or S.pane_mode == 'diff'
         S.pane_win = nil
+        -- Nothing is shown beside the list now: no row is marked.
+        mark_shown()
         if was_in and view and not S.closing then
           vim.schedule(function()
             if M.is_open() and not valid_win(S.pane_win) then

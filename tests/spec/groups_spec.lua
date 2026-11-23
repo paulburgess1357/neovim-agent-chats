@@ -4,7 +4,7 @@
 local T = require('helpers.harness')
 local fx = require('helpers.claude')
 local fake = require('helpers.fake')
-local eq, ok, no, has, hasnt = T.eq, T.ok, T.no, T.has, T.hasnt
+local eq, ok, has, hasnt = T.eq, T.ok, T.has, T.hasnt
 
 local api = vim.api
 
@@ -402,6 +402,15 @@ describe('a group of your own', function()
   end)
 
   it('has no key by default, and takes the one you give it', function()
+    open(function(h)
+      chat(h)
+    end)
+    eq(nil, require('agent-chats.keys').key('move'))
+    feed('?')
+    has(table.concat(menu().lines(), '\n'), '       Put it in a group of your own')
+    menu().close()
+    board().close()
+
     local _, c = open(function(h)
       return chat(h)
     end, { keys = { move = 'gm' } })
@@ -412,6 +421,153 @@ describe('a group of your own', function()
       feed('gm')
     end)
     eq('Release', state().group(key(c)))
+  end)
+end)
+
+describe('a group of your own, as a whole', function()
+  --- Three chats, two of them in "Release"; the cursor on its heading.
+  local function scene()
+    local _, made = open(function(h)
+      local a = chat(h, { title = 'Parser work', age = 100 })
+      local b = chat(h, { title = 'Docs work', age = 200 })
+      local c = chat(h, { title = 'Other work', age = 300 })
+      return { a = a, b = b, c = c }
+    end)
+    state().set_group(key(made.a), 'Release')
+    state().set_group(key(made.b), 'Release')
+    store().touch()
+    board().render()
+    for i, row in ipairs(board()._state.rows) do
+      if row.kind == 'group' and row.own == 'Release' then
+        api.nvim_win_set_cursor(board()._state.win, { i, 1 })
+      end
+    end
+    return made
+  end
+
+  it('is renamed from the menu on its heading, and its chats go with it', function()
+    local made = scene()
+    board().menu()
+    local shown = table.concat(menu().lines(), '\n')
+    has(shown, 'This group')
+    has(shown, 'Rename this group')
+    has(shown, 'Take every chat out of it (the group is gone then)')
+    local seen = asked({}, { '  Shipping  ' }, function()
+      ok(menu().pick('Rename this group'))
+    end)
+    eq({ 'New name for “Release”: ' }, seen.typed)
+    eq('Shipping', state().group(key(made.a)))
+    eq('Shipping', state().group(key(made.b)))
+    eq(nil, state().group(key(made.c)))
+    eq({ 'Shipping', 'Ended' }, headings())
+    has(under('Shipping'), 'Parser work')
+    has(under('Shipping'), 'Docs work')
+    -- The cursor is on the heading still, under its new name.
+    local at = board()._state.rows[api.nvim_win_get_cursor(board()._state.win)[1]]
+    eq('Shipping', at.own)
+  end)
+
+  it('stays folded when it is renamed, and is not renamed to nothing', function()
+    local made = scene()
+    feed('<CR>')
+    hasnt(list(), 'Parser work')
+    asked({}, { 'Shipping' }, function()
+      board().menu()
+      menu().pick('Rename this group')
+    end)
+    has(list(), 'Shipping  2')
+    hasnt(list(), 'Parser work')
+    -- Called off, blank, or the name it has: nothing happens.
+    for _, typed in ipairs({ false, '   ', 'Shipping' }) do
+      asked({}, { typed or nil }, function()
+        board().menu()
+        menu().pick('Rename this group')
+      end)
+      eq('Shipping', state().group(key(made.a)))
+    end
+  end)
+
+  it('joins another group when it is given that one’s name, and says so', function()
+    local made = scene()
+    state().set_group(key(made.c), 'Later')
+    store().touch()
+    board().render()
+    for i, row in ipairs(board()._state.rows) do
+      if row.kind == 'group' and row.own == 'Release' then
+        api.nvim_win_set_cursor(board()._state.win, { i, 1 })
+      end
+    end
+    local said = notes(function()
+      asked({}, { 'Later' }, function()
+        board().menu()
+        menu().pick('Rename this group')
+      end)
+    end)
+    has(said, 'There was a group called “Later” already: the chats are in it now.')
+    eq({ 'Later', 'Later', 'Later' }, {
+      state().group(key(made.a)),
+      state().group(key(made.b)),
+      state().group(key(made.c)),
+    })
+    eq({ 'Later' }, headings())
+  end)
+
+  it('is emptied in one step, once that has been confirmed', function()
+    local made = scene()
+    -- Not confirmed: as it was.
+    local seen = asked({ 'No' }, {}, function()
+      board().menu()
+      menu().pick('Take every chat out of it (the group is gone then)')
+    end)
+    eq({ 'Take all 2 chats out of “Release”? The group is gone then.' }, seen.prompts)
+    eq('Release', state().group(key(made.a)))
+    local said = notes(function()
+      asked({ 'Yes' }, {}, function()
+        board().menu()
+        menu().pick('Take every chat out of it (the group is gone then)')
+      end)
+    end)
+    has(said, '“Release” is gone. Its 2 chats are listed by their status again.')
+    eq(nil, state().group(key(made.a)))
+    eq(nil, state().group(key(made.b)))
+    eq({ 'Ended' }, headings())
+    has(under('Ended'), 'Parser work')
+  end)
+
+  it('says it of one chat as of one chat', function()
+    local made = scene()
+    state().set_group(key(made.b), nil)
+    store().touch()
+    board().render()
+    for i, row in ipairs(board()._state.rows) do
+      if row.kind == 'group' and row.own == 'Release' then
+        api.nvim_win_set_cursor(board()._state.win, { i, 1 })
+      end
+    end
+    local seen
+    local said = notes(function()
+      seen = asked({ 'Yes' }, {}, function()
+        board().menu()
+        menu().pick('Take every chat out of it (the group is gone then)')
+      end)
+    end)
+    eq({ 'Take the chat out of “Release”? The group is gone then.' }, seen.prompts)
+    has(said, '“Release” is gone. Its chat is listed by its status again.')
+    eq(nil, state().group(key(made.a)))
+  end)
+
+  it('is offered on its heading only: not on a heading of the board’s own', function()
+    scene()
+    for i, row in ipairs(board()._state.rows) do
+      if row.kind == 'group' and not row.own then
+        api.nvim_win_set_cursor(board()._state.win, { i, 1 })
+      end
+    end
+    board().menu()
+    local shown = table.concat(menu().lines(), '\n')
+    has(shown, 'Fold this group')
+    hasnt(shown, 'Rename this group')
+    hasnt(shown, 'Take every chat out')
   end)
 end)
 

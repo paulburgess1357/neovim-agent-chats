@@ -126,46 +126,6 @@ function M.info(cwd, cb)
   return hit
 end
 
----@class agent_chats.Worktree
----@field path string
----@field branch string?
----@field head string?
----@field bare boolean?
----@field detached boolean?
----@field locked boolean?
----@field prunable boolean?
-
---- Worktrees of the repository containing `cwd` (main checkout first).
----@return agent_chats.Worktree[]
-function M.worktrees(cwd)
-  local res = git(cwd, { 'worktree', 'list', '--porcelain' })
-  local out = {}
-  if res.code ~= 0 then
-    return out
-  end
-  local cur
-  for line in ((res.stdout or '') .. '\n'):gmatch('([^\n]*)\n') do
-    if line == '' then
-      cur = nil
-    else
-      local key, val = line:match('^(%S+)%s*(.*)$')
-      if key == 'worktree' then
-        cur = { path = val }
-        out[#out + 1] = cur
-      elseif cur then
-        if key == 'branch' then
-          cur.branch = val:gsub('^refs/heads/', '')
-        elseif key == 'HEAD' then
-          cur.head = val
-        elseif key == 'bare' or key == 'detached' or key == 'locked' or key == 'prunable' then
-          cur[key] = true
-        end
-      end
-    end
-  end
-  return out
-end
-
 --- Create a worktree at `path` on a new branch `branch` (from `base`, default HEAD).
 ---@return boolean ok, string? err
 function M.add_worktree(cwd, path, branch, base)
@@ -197,14 +157,6 @@ function M.diff(cwd)
     diff = git(cwd, { 'diff' })
   end
   return vim.trim(st.stdout or '') .. '\n\n' .. (diff.stdout or '')
-end
-
-function M.forget(cwd)
-  if cwd then
-    cache[cwd] = nil
-  else
-    cache = {}
-  end
 end
 
 return M

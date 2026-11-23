@@ -73,11 +73,6 @@ function M.tick()
   coroutine.yield()
 end
 
---- Whether the caller runs inside `run`.
-function M.is_async()
-  return current() ~= nil
-end
-
 --- Run a process and return its result (`vim.system` completion table).
 --- Suspends the coroutine inside `run`; blocks outside it.
 ---@param cmd string[]
@@ -102,18 +97,6 @@ function M.system(cmd, opts)
     return { code = 127, signal = 0, stdout = '', stderr = tostring(err) }
   end
   return coroutine.yield()
-end
-
---- Wait `ms` milliseconds without blocking the editor.
----@param ms integer
-function M.sleep(ms)
-  local state = current()
-  if not state then
-    vim.wait(ms)
-    return
-  end
-  vim.defer_fn(state.step, ms)
-  coroutine.yield()
 end
 
 return M

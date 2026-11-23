@@ -1,7 +1,7 @@
 -- A tiny test harness: describe / it / before_each / after_each and a few
 -- assertions. No dependencies, so the suite runs with nothing but Neovim:
 --
---   nvim --clean --headless -l tests/run.lua [filter]
+--   make test        (tests/run.lua has the command, and SPEC and FILTER)
 
 local M = {}
 
@@ -103,6 +103,17 @@ function M.tmpdir()
   local dir = vim.fn.tempname()
   vim.fn.mkdir(dir, 'p')
   tmpdirs[#tmpdirs + 1] = dir
+  return dir
+end
+
+--- A folder called `name` that is really there (the same one each time it
+--- is asked for), for a chat that is to be listed as one that can be
+--- resumed: a chat whose folder is not there is listed under "Folder gone".
+local folders
+function M.folder(name)
+  folders = folders or M.tmpdir()
+  local dir = folders .. '/' .. name
+  vim.fn.mkdir(dir, 'p')
   return dir
 end
 

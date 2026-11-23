@@ -2,10 +2,6 @@
 
 local M = {}
 
-function M.now()
-  return os.time()
-end
-
 --- Epoch seconds with their fraction. For marks that are compared with
 --- times an agent wrote down to the millisecond.
 ---@return number
@@ -107,17 +103,6 @@ function M.since(ts, now)
     return ''
   end
   return ago == 'now' and 'just now' or (ago .. ' ago')
-end
-
---- A span of seconds: `41s`, `2m 05s`, `1h 12m`.
-function M.span(secs)
-  secs = math.max(0, math.floor(secs or 0))
-  if secs < 60 then
-    return ('%ds'):format(secs)
-  elseif secs < 3600 then
-    return ('%dm %02ds'):format(math.floor(secs / 60), secs % 60)
-  end
-  return ('%dh %02dm'):format(math.floor(secs / 3600), math.floor(secs % 3600 / 60))
 end
 
 --- Local wall-clock time: `14:02` today, `Nov 20 14:02` otherwise.

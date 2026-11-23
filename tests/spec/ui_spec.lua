@@ -5,6 +5,10 @@ local eq, ok, no, has, hasnt = T.eq, T.ok, T.no, T.has, T.hasnt
 
 local api = vim.api
 
+-- Folders that are there: chats in them are listed as ones that can be
+-- resumed.
+local ALPHA, BETA = T.folder('alpha'), T.folder('beta')
+
 local function board()
   return require('agent-chats.ui.board')
 end
@@ -22,7 +26,7 @@ end
 local function chat(home, opts)
   opts = opts or {}
   local c = home:chat({
-    cwd = opts.cwd or '/work/alpha',
+    cwd = opts.cwd or ALPHA,
     branch = opts.branch or 'main',
     start = os.time() - (opts.age or 600) - 5,
   })
@@ -101,7 +105,7 @@ describe('board', function()
     local before = api.nvim_get_current_tabpage()
     open(function(home)
       chat(home, { title = 'Fix the parser' })
-      chat(home, { title = 'Write the docs', cwd = '/work/beta', age = 60 })
+      chat(home, { title = 'Write the docs', cwd = BETA, age = 60 })
     end)
     local S = board()._state
     ok(board().is_open())
@@ -132,7 +136,7 @@ describe('board', function()
     board()._state.pending_pane = false
     vim.wait(50)
     has(pane(), '# Fix the parser')
-    has(pane(), '/work/alpha')
+    has(pane(), '/alpha')
     has(pane(), 'Please fix the parser')
     has(pane(), 'The parser is **fixed**.')
   end)
@@ -150,11 +154,8 @@ describe('board', function()
 
   it('narrows the rows to what is searched for: a name, a folder, a message', function()
     open(function(home)
-      chat(home, { title = 'Fix the parser', cwd = '/work/alpha' })
-      chat(
-        home,
-        { title = 'Write the docs', cwd = '/work/beta', reply = 'Docs mention the zebra.' }
-      )
+      chat(home, { title = 'Fix the parser', cwd = ALPHA })
+      chat(home, { title = 'Write the docs', cwd = BETA, reply = 'Docs mention the zebra.' })
     end)
     local function narrow(text)
       board().search(text, { conversations = false })
@@ -179,7 +180,7 @@ describe('board', function()
 
     narrow('nothing-matches-this')
     has(list(), 'No row shows “nothing-matches-this”')
-    has(list(), 'q ends the search')
+    has(vim.wo[board()._state.win].winbar, 'End Search')
     ok(board().clear())
     eq('', board().query())
     has(list(), 'Fix the parser')
@@ -189,13 +190,13 @@ describe('board', function()
 
   it('groups by folder, agent and status', function()
     open(function(home)
-      chat(home, { cwd = '/work/alpha' })
-      chat(home, { cwd = '/work/beta' })
+      chat(home, { cwd = ALPHA })
+      chat(home, { cwd = BETA })
     end)
     has(list(), 'Ended  2')
     board().set_group('folder')
-    has(list(), '/work/alpha  1')
-    has(list(), '/work/beta  1')
+    has(list(), '/alpha  1')
+    has(list(), '/beta  1')
     has(list(), 'by folder')
     board().set_group('agent')
     has(list(), 'Claude  2')
@@ -244,6 +245,67 @@ describe('board', function()
     has(list(), 'Chat number 6')
   end)
 
+  it('shows what a note says on the row, the title giving way only so far', function()
+    local name = 'A title that takes a good deal of room on the row'
+    local _, c = open(function(home)
+      return chat(home, { title = name, age = 1200 })
+    end)
+    local note = require('agent-chats.config').get().icons.note
+    local S = board()._state
+    local columns = vim.o.columns
+    local function row(width, words)
+      state().set_note(key(c), words)
+      api.nvim_win_set_width(S.win, width)
+      board().render()
+      for i, r in ipairs(S.rows) do
+        if r.kind == 'chat' then
+          local line = api.nvim_buf_get_lines(S.buf, i - 1, i, false)[1]
+          ok(vim.fn.strdisplaywidth(line) <= width, ('%d: %s'):format(width, line))
+          return line
+        end
+      end
+    end
+    local good, err = pcall(function()
+      vim.o.columns = 240
+      -- Room for both: the note in full.
+      has(row(140, 'ask Sam first'), name .. ' ' .. note .. ' ask Sam first   ')
+      -- What a note is written on more than one line of is one line here.
+      has(row(140, 'ask Sam\nfirst'), note .. ' ask Sam first   ')
+      -- A long note beside a long title: both are cut, and the title keeps
+      -- the larger part.
+      local long = 'this note goes on and on about what is still to be done here'
+      local tight = row(100, long)
+      local at = tight:find(note, 1, true)
+      local title = tight:sub(1, at - 1):match('(A title.-)…')
+      local said = tight:sub(at + #note):match('^ (this note.-)…')
+      ok(title and said, tight)
+      hasnt(tight, 'done here')
+      ok(vim.fn.strdisplaywidth(title) >= 2 * vim.fn.strdisplaywidth(said), tight)
+      ok(#said >= 8, tight)
+      -- A short one is not cut for it.
+      has(row(100, 'ask Sam'), note .. ' ask Sam   ')
+      -- No room worth the name: the mark alone says that there is a note.
+      local narrow = row(44, long)
+      has(narrow, note .. ' ')
+      hasnt(narrow, 'this')
+      -- (One that fits whole in the little there is, is shown.)
+      has(row(44, 'ask Sam'), note .. ' ask Sam ')
+      -- With its other marks, the note comes last: its words end the row.
+      state().enqueue(key(c), 'then the docs')
+      state().set_labels(key(c), { 'urgent' })
+      has(row(140, 'ask Sam first'), '#urgent ' .. note .. ' ask Sam first   ')
+      -- Found by a word of the note, the word is marked on the row.
+      board().search('Sam')
+      local found = false
+      for _, m in ipairs(api.nvim_buf_get_extmarks(S.buf, -1, 0, -1, { details = true })) do
+        found = found or m[4].hl_group == 'AgentChatsMatch'
+      end
+      ok(found, 'the word of the note is marked')
+    end)
+    vim.o.columns = columns
+    assert(good, err)
+  end)
+
   it('shows pins, labels, notes and unread state on the row', function()
     local _, c = open(function(home)
       chat(home, { title = 'Older chat', age = 900 })
@@ -259,7 +321,8 @@ describe('board', function()
     has(list(), icons.pin .. ' Fix the parser')
     has(list(), '#review')
     has(list(), '#urgent')
-    has(list(), icons.note)
+    -- A note in its own words, behind its mark.
+    has(list(), icons.note .. ' waiting on CI')
     -- Pinned chats lead their group.
     ok(list():find('Fix the parser', 1, true) < list():find('Older chat', 1, true))
 
@@ -292,7 +355,7 @@ describe('board', function()
     eq('Fix the parser', store().get(key(c)).title)
   end)
 
-  it('lists subagents under their chat on Tab', function()
+  it('lists subagents under their chat when it is unfolded', function()
     local _, c = open(function(home)
       local made = chat(home, { title = 'Fix the parser' })
       made:subagent(
@@ -376,7 +439,7 @@ describe('board', function()
     has(list(), '…')
   end)
 
-  it('lists what can be done with a chat, in words, each with its key', function()
+  it('lists what can be done with a chat, in words, with the key of each that has one', function()
     local _, gone = open(function(home)
       chat(home, { title = 'Fix the parser', cwd = vim.uv.cwd(), age = 60 })
       return chat(home, { title = 'Its folder is gone', cwd = '/work/alpha' })
@@ -388,10 +451,9 @@ describe('board', function()
     has(all, 'Enter  Resume it in ' .. vim.fn.fnamemodify(vim.uv.cwd(), ':~'))
     has(all, 'C      Read the conversation')
     -- A reply is typed in the chat itself (Enter goes there): the menu has
-    -- no line for it, and none for forking or for passing the chat on.
+    -- no line for it, and none for forking a chat.
     hasnt(all, 'Reply')
     hasnt(all, 'Fork')
-    hasnt(all, 'Pass')
     has(all, '+      New chat')
     has(all, 'S      Search chats')
     -- All of it is there, under what it is about; nothing is a step down.
@@ -450,7 +512,8 @@ describe('opening chats', function()
     board().focus()
     eq(S.win, api.nvim_get_current_win())
     eq(buf, api.nvim_win_get_buf(S.pane_win))
-    has(vim.wo[S.pane_win].winbar, 'LIVE')
+    -- (The pane has no bar of its own: the terminal has every line of it.)
+    eq('', vim.wo[S.pane_win].winbar)
 
     -- Opening it again goes to the same terminal.
     eq(buf, actions().open(store().get(key(c))))
@@ -510,8 +573,8 @@ describe('opening chats', function()
     end)
     store().refresh_sync({ full = false })
     board().focus()
-    -- The key that queues a reply: with nothing for it to wait behind, what
-    -- is written goes at once.
+    -- Queueing a reply with nothing for it to wait behind: what is written
+    -- goes at once.
     actions().queue(store().get(key(c)))
     local input = require('agent-chats.ui.input')
     ok(input.is_open())
@@ -685,7 +748,7 @@ describe('opening chats', function()
     eq(0, #state().queue(key(c)))
   end)
 
-  it('jumps to the chat that has waited longest', function()
+  it('goes into the chat that waits for you, resuming it', function()
     local home = open(function(h)
       chat(h, { title = 'Seen already' })
     end)
@@ -774,15 +837,15 @@ describe('reading and searching', function()
       chat(h, { title = 'Write the docs', reply = 'Docs are written.' })
       return a
     end)
-    local done = false
-    require('agent-chats.search').run('TOKENIZER', function(_, running)
-      done = not running
+    local done, hits = false, nil
+    require('agent-chats.search').run('TOKENIZER', function(found, running)
+      hits, done = found, not running
     end)
     T.wait(3000, function()
       return done
     end)
     -- Smart case: an uppercase query is exact, so nothing matches.
-    local hits
+    eq(0, vim.tbl_count(hits))
     done = false
     require('agent-chats.search').run('tokenizer', function(found, running)
       hits, done = found, not running
@@ -828,23 +891,8 @@ describe('reading and searching', function()
     eq(0, #scan(messages, '3 passed', { max_hits = 5, tools = false }))
     eq(1, #scan(messages, '3 passed', { max_hits = 5, tools = true }))
     eq(1, #scan(messages, 'make test', { max_hits = 5, tools = true }))
-    eq(1, #scan(messages, 'fix the PARSER', { max_hits = 5, tools = false }) == 0 and 1 or 0)
+    eq(0, #scan(messages, 'fix the PARSER', { max_hits = 5, tools = false }))
     eq(1, #scan(messages, 'fix the parser', { max_hits = 5, tools = false }))
-  end)
-
-  it('writes handoff notes another agent can pick up from', function()
-    local _, made = open(function(h)
-      return chat(h, { reply = 'The parser is fixed.' })
-    end)
-    local c = store().get(key(made))
-    local messages = require('agent-chats.providers.claude').messages(c)
-    local notes = actions().notes_for(c, messages)
-    -- The first line is what the new chat is called on the board.
-    eq('Taking over “Fix the parser” from Claude.', vim.split(notes, '\n')[1])
-    has(notes, 'You are taking over a task from another coding agent.')
-    has(notes, 'Folder: /work/alpha')
-    has(notes, '[user] Please fix the parser')
-    has(notes, '[agent] The parser is fixed.')
   end)
 end)
 
@@ -901,7 +949,12 @@ describe('commands and status line', function()
         return { { id = 'one', mtime = os.time(), size = 1 } }
       end,
       parse = function()
-        return { title = 'A demo chat', cwd = '/work/demo', turn = 'done', updated = os.time() - 5 }
+        return {
+          title = 'A demo chat',
+          cwd = T.folder('demo'),
+          turn = 'done',
+          updated = os.time() - 5,
+        }
       end,
       messages = function()
         return { { role = 'user', text = 'hello demo' } }, nil

@@ -134,6 +134,14 @@ M.defaults = {
     tools = false, -- also search what tool calls were given and gave back
   },
 
+  -- Folders whose chats you do not want among the others. A name ("waffle")
+  -- is every folder of that name, wherever it is, and what is inside it; a
+  -- path ("~/tmp/waffle") is that one folder and what is inside it. Their
+  -- chats are listed under "Filtered out" at the end of the board, folded,
+  -- and are left out of the counts, the notifications and `:Chats next`. A
+  -- search still finds them.
+  filter_out = {},
+
   -- Where the plugin keeps what it remembers about chats (read marks, pins,
   -- labels, notes, queued replies). nil: stdpath('state')/agent-chats/state.json
   state_file = nil,
@@ -161,6 +169,7 @@ M.defaults = {
     collapsed = '▸',
     expanded = '▾',
     dirty = '±',
+    shown = '▌', -- at the left of the row whose chat is in the pane
     elsewhere = '↗', -- running, but not in a terminal of this Neovim
     providers = {}, -- e.g. { claude = '󰚩' } to show a glyph instead of the name
   },
@@ -176,6 +185,7 @@ M.defaults = {
     read = 'C', -- the whole conversation
     new = '+',
     search = { 'S', '/' },
+    refresh = 'R', -- look for changes now; the list also does so by itself
     menu = { '?', 'g?', '<RightMouse>' }, -- everything that can be done here
     back = 'q', -- one step back: out of a conversation, a search, the board
     clear = '<Esc>', -- end a search
@@ -201,16 +211,9 @@ M.defaults = {
     pane = false,
     show_all = false,
     read_all = false,
-    next_attention = false,
-    prev_attention = false,
     scroll_down = false,
     scroll_up = false,
-    refresh = false,
     hooks = false,
-
-    -- Switched off: passing a chat on to another agent is neither in the
-    -- menu nor on a key until it is given one here.
-    pass = false,
   },
 }
 
@@ -220,6 +223,10 @@ local current
 -- is mapped there (see keys.lua). The same for `open.back_key`.
 local explicit = {} ---@type table<string, boolean>
 local explicit_back = false
+-- The folders of `filter_out`, ready to compare a folder with (worked out
+-- when first asked for), and what was found for each folder asked about.
+local filters ---@type { entry: string, path: string?, name: string? }[]?
+local filtered = {} ---@type table<string, string|false>
 
 local LAYOUTS = { tab = true, float = true, current = true }
 local GROUPS = { status = true, folder = true, agent = true, worktree = true }
@@ -227,7 +234,6 @@ local GROUPS = { status = true, folder = true, agent = true, worktree = true }
 -- Names that options and key actions went by before, and what they are now.
 local RENAMED_KEYS = {
   transcript = 'read',
-  handoff = 'pass',
   filter = 'search',
   help = 'menu',
   close = 'back',
@@ -237,7 +243,13 @@ local GONE_KEYS = {
   yank_id = 'the command that keys.yank copies holds the id',
   reply = 'Enter goes into the chat, and the reply is typed there',
   fork = 'forking a chat was taken out',
+  pass = 'passing a chat on to another agent was taken out',
+  handoff = 'passing a chat on to another agent was taken out',
+  next_attention = 'going from one chat that needs you to the next was taken out',
+  prev_attention = 'going from one chat that needs you to the next was taken out',
 }
+-- Options that are a list as a whole (every other one is a table of names).
+local LISTS = { filter_out = true }
 
 local function warn(msg)
   vim.schedule(function()
@@ -251,6 +263,10 @@ end
 local function sanitise(opts)
   for name, default in pairs(M.defaults) do
     local given = opts[name]
+    if LISTS[name] then
+      -- (Looked at on its own, in `check`.)
+      given = nil
+    end
     if type(default) == 'table' and given ~= nil then
       if type(given) ~= 'table' then
         warn(
@@ -343,6 +359,33 @@ local function check(cfg, user)
     cfg.open.back_key = M.defaults.open.back_key
     explicit_back = false
   end
+  -- One folder may be given as it is; anything that is not the name or the
+  -- path of a folder is said and left out.
+  local given = cfg.filter_out
+  if type(given) == 'string' then
+    given = { given }
+  end
+  local folders = {}
+  if type(given) ~= 'table' then
+    warn(
+      ('filter_out must be a list of folder names or paths; %s is not one, so nothing is filtered out'):format(
+        vim.inspect(given)
+      )
+    )
+  else
+    for _, entry in pairs(given) do
+      if type(entry) == 'string' and vim.trim(entry) ~= '' then
+        folders[#folders + 1] = vim.trim(entry)
+      else
+        warn(
+          ('filter_out takes the names or paths of folders; %s is neither, so it is left out'):format(
+            (vim.inspect(entry):gsub('%s+', ' '))
+          )
+        )
+      end
+    end
+  end
+  cfg.filter_out = folders
   for action, lhs in pairs(cfg.keys) do
     if M.defaults.keys[action] == nil then
       local names = vim.tbl_keys(M.defaults.keys)
@@ -420,8 +463,12 @@ function M.setup(opts)
   if opts.icons and opts.icons.spinner then
     cfg.icons.spinner = vim.deepcopy(opts.icons.spinner)
   end
+  if opts.filter_out ~= nil then
+    cfg.filter_out = vim.deepcopy(opts.filter_out)
+  end
   check(cfg, opts)
   current = cfg
+  filters, filtered = nil, {}
   -- Which keys are bound is worked out again from the new options, and a
   -- board that is open is given them.
   local keys = package.loaded['agent-chats.keys']
@@ -473,6 +520,55 @@ function M.get()
   return current
 end
 
+--- The entry of `filter_out` that folder `cwd` falls under: the folder is
+--- filtered out, and this is why. nil when it is not.
+---
+--- An entry that begins like a path (`/`, `~`, `$`, a drive) is one folder
+--- and everything inside it. Any other is a name: every folder called that,
+--- wherever it is, and everything inside it (`a/b` is a folder `b` in a
+--- folder `a`).
+---@param cwd string?
+---@return string?
+function M.filtered(cwd)
+  if type(cwd) ~= 'string' or cwd == '' then
+    return nil
+  end
+  local entries = M.get().filter_out
+  if #entries == 0 then
+    return nil
+  end
+  local known = filtered[cwd]
+  if known ~= nil then
+    return known or nil
+  end
+  if not filters then
+    filters = {}
+    for _, entry in ipairs(entries) do
+      local path = entry:match('^[/~$]') or entry:match('^%a:[/\\]')
+      -- (Without the slash it may end in: `waffle/` is `waffle`.)
+      local bare = (path and vim.fs.normalize(entry) or entry):gsub('[/\\]+$', '')
+      if bare ~= '' then
+        filters[#filters + 1] = { entry = entry, [path and 'path' or 'name'] = bare }
+      end
+    end
+  end
+  local dir = vim.fs.normalize(cwd)
+  local found = false ---@type string|false
+  for _, f in ipairs(filters) do
+    if f.path then
+      if dir == f.path or dir:sub(1, #f.path + 1) == f.path .. '/' then
+        found = f.entry
+        break
+      end
+    elseif ('/' .. dir .. '/'):find('/' .. f.name .. '/', 1, true) then
+      found = f.entry
+      break
+    end
+  end
+  filtered[cwd] = found
+  return found or nil
+end
+
 --- Every key the options give for an action, bound or not.
 ---@param action string
 ---@return string[]
@@ -506,13 +602,6 @@ end
 -- What follows is how every hint and title learns its keys. A key is named
 -- only when it is bound: a hint for an action without one is left out
 -- rather than name a key that does nothing. (keys.lua decides what is bound.)
-
---- The keys bound to an action on the board's list.
----@param action string
----@return string[]
-function M.keys_of(action)
-  return require('agent-chats.keys').of(action)
-end
 
 --- The first key bound to an action, as text for a hint; nil when it has none.
 ---@param action string

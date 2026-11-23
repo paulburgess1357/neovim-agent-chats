@@ -130,20 +130,6 @@ function M.lines(s)
   return out
 end
 
---- The last `n` lines of `s` (all of it when shorter), plus whether it was cut.
----@return string[] lines, boolean cut
-function M.tail_lines(s, n)
-  local lines = M.lines(s)
-  if #lines <= n then
-    return lines, false
-  end
-  local out = {}
-  for i = #lines - n + 1, #lines do
-    out[#out + 1] = lines[i]
-  end
-  return out, true
-end
-
 --- The first `n` lines of `s`, plus how many were left out.
 ---@return string[] lines, integer omitted
 function M.head_lines(s, n)
@@ -189,15 +175,6 @@ function M.clip_tail(s, max)
     start = start + 1
   end
   return s:sub(start)
-end
-
---- A name safe for a git branch or directory, derived from free text.
-function M.slug(s, max)
-  s = (s or ''):lower():gsub('[^%w]+', '-'):gsub('^%-+', ''):gsub('%-+$', '')
-  if max and #s > max then
-    s = s:sub(1, max):gsub('%-+$', '')
-  end
-  return s
 end
 
 --- `s` broken into lines of at most `width` cells, at spaces.

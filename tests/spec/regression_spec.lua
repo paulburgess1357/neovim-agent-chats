@@ -22,7 +22,8 @@ end
 local function chat(home, opts)
   opts = opts or {}
   local age = opts.age or 600
-  local c = home:chat({ cwd = opts.cwd or '/work/alpha', start = os.time() - age - 5 })
+  -- (A folder that is there: the chat is listed as one that can be resumed.)
+  local c = home:chat({ cwd = opts.cwd or T.folder('alpha'), start = os.time() - age - 5 })
   c:user(opts.prompt or 'Please fix the parser'):title(opts.title or 'Fix the parser')
   c:assistant(opts.reply or 'The parser is fixed.'):turn_done()
   return c:write(os.time() - age)
@@ -215,7 +216,7 @@ describe('regressions', function()
     eq('', agent.read())
     eq(1, #state().queue(key(c)))
 
-    -- Q on the chat offers to send it.
+    -- "Queued replies" on the chat offers to send it.
     local real = vim.ui.select
     vim.ui.select = function(items, _, cb)
       cb(vim.tbl_contains(items, 'send') and 'send' or nil)
@@ -316,8 +317,15 @@ describe('regressions', function()
     board().open()
     board().goto_chat(key(c))
     board().render()
-    eq(buf, api.nvim_win_get_buf(board()._state.pane_win))
+    -- On screen in a window of its own, it stays there (the pane has the
+    -- summary), and has the key all the same: Enter leads to it.
+    local pane = board()._state.pane_win
+    eq('agent-chats-summary', vim.bo[api.nvim_win_get_buf(pane)].filetype)
     ok(vim.b[buf].agent_chats_back)
+    eq(buf, actions().open(store().get(key(c))))
+    vim.cmd('stopinsert')
+    eq(buf, api.nvim_get_current_buf())
+    ok(api.nvim_get_current_win() ~= pane, 'the cursor is in the window it was in all along')
   end)
 
   it('does not reuse a window that now shows a file', function()
@@ -435,7 +443,7 @@ describe('regressions', function()
     s.sent('claude:a')
     eq('second', s.dequeue('claude:a').text)
     -- A reply that could not be delivered goes back and frees the chat.
-    s.requeue('claude:a', { text = 'second', at = os.time() })
+    s.requeue('claude:a', { text = 'second' })
     eq('second', s.dequeue('claude:a').text)
   end)
 
@@ -1634,7 +1642,7 @@ describe('regressions: board', function()
     vim.notify = function(msg)
       said[#said + 1] = msg
     end
-    board().jump_attention(1)
+    board().goto_chat(key(waiting))
     vim.notify = real
     eq({}, said)
     has(list(), 'Wants an answer')
@@ -1643,11 +1651,11 @@ describe('regressions: board', function()
 
   it('counts in the header what the search left, not everything', function()
     local home = open_board(nil, function(h)
-      chat(h, { title = 'Alpha one', cwd = '/work/alpha' })
-      chat(h, { title = 'Beta one', cwd = '/work/beta' })
+      chat(h, { title = 'Alpha one', cwd = T.folder('alpha') })
+      chat(h, { title = 'Beta one', cwd = T.folder('beta') })
     end)
-    local a = chat(home, { title = 'Alpha two', cwd = '/work/alpha', age = 5 })
-    local b = chat(home, { title = 'Beta two', cwd = '/work/beta', age = 5 })
+    local a = chat(home, { title = 'Alpha two', cwd = T.folder('alpha'), age = 5 })
+    local b = chat(home, { title = 'Beta two', cwd = T.folder('beta'), age = 5 })
     state().update(function(s)
       s.baseline = os.time() - 300
       s.seen = {}
@@ -1676,23 +1684,21 @@ describe('regressions: board', function()
     local win = board()._state.win
     api.nvim_win_set_width(win, 36)
     board().render()
-    local header = api.nvim_buf_get_lines(board()._state.buf, 0, 1, false)[1]
-    -- The counts are still there, in fewer cells, and so is a key.
-    has(header, '3 chats')
-    has(header, '✓3')
-    has(header, '+ new')
-    ok(vim.fn.strdisplaywidth(header) <= 36, 'the header fits: ' .. header)
-    api.nvim_win_set_width(win, 60)
-    board().render()
-    has(api.nvim_buf_get_lines(board()._state.buf, 0, 1, false)[1], '3 chats · 3 unread')
-    api.nvim_win_set_width(win, 36)
-    board().render()
+    local function header(width)
+      api.nvim_win_set_width(win, width)
+      board().render()
+      return api.nvim_buf_get_lines(board()._state.buf, 0, 1, false)[1]
+    end
+    -- The counts are in words where those fit, and in fewer cells where
+    -- they do not.
+    eq(' 3 chats · 3 unread', header(36))
+    eq(' 3 chats  ✓3', header(14))
+    header(36)
     -- The bar above the list drops its hints one by one, never the last:
     -- the way to everything else.
     local bar = vim.wo[win].winbar
-    has(bar, '?%* menu')
+    has(bar, '?%* Menu')
     has(bar, 'Enter')
-    hasnt(bar, 'pass on')
   end)
 
   it('acts on the chat under the cursor of the window the key was typed in', function()
@@ -1735,7 +1741,6 @@ describe('regressions: board', function()
         menu = 'g!',
         open = false,
         read = 'v',
-        reply = false,
         new = false,
       },
     })
@@ -1751,18 +1756,17 @@ describe('regressions: board', function()
     local text = list()
     has(text, '… 2 more (zo shows them)')
     has(text, '1 chat older than 30 days not shown (gA shows them)')
-    has(text, 'S search')
-    hasnt(text, 'new chat')
     hasnt(text, ':Chats')
     local bar = vim.wo[board()._state.win].winbar
-    has(bar, 'v%* conversation')
-    has(bar, 'g!%* menu')
-    hasnt(bar, 'reply')
+    has(bar, 'S%* Search')
+    hasnt(bar, 'New Chat')
+    has(bar, 'v%* Conversation')
+    has(bar, 'g!%* Menu')
     hasnt(bar, 'Enter')
     hasnt(bar, '?')
     -- With no key to end a search, nothing is said about ending one.
     board().search('nothing-matches-this', { conversations = false })
-    hasnt(list(), 'ends the search')
+    hasnt(vim.wo[board()._state.win].winbar, 'End Search')
     hasnt(list(), ':Chats')
     -- And the summary speaks of the same keys.
     board().clear()
@@ -1780,7 +1784,7 @@ describe('regressions: board', function()
     api.nvim_set_current_win(board()._state.pane_win)
     vim.cmd('bdelete')
     board().focus()
-    -- The pane went with its buffer; p brings it back.
+    -- The pane went with its buffer; "Show the pane" brings it back.
     eq(nil, board()._state.pane_win)
     board().toggle_pane()
     local now = board()._state.preview_buf
@@ -1858,40 +1862,43 @@ describe('regressions: actions', function()
     return table.concat(said, '\n')
   end
 
-  it("does not turn the agent's title into a name of yours when R is only confirmed", function()
-    local home = fx.home()
-    local c = chat(home, { title = 'Fix the parser' })
-    store().refresh_sync()
-    local real = vim.ui.input
-    -- Enter on what is offered.
-    vim.ui.input = function(opts, cb)
-      cb(opts.default)
-    end
-    actions().rename(store().get(key(c)))
-    eq(nil, state().name(key(c)))
-    -- The agent retitles the chat later: the row follows.
-    c:title('Fix the parser and the lexer'):write()
-    store().refresh_sync()
-    eq('Fix the parser and the lexer', require('agent-chats.display').title(store().get(key(c))))
+  it(
+    "does not turn the agent's title into a name of yours when a rename is only confirmed",
+    function()
+      local home = fx.home()
+      local c = chat(home, { title = 'Fix the parser' })
+      store().refresh_sync()
+      local real = vim.ui.input
+      -- Enter on what is offered.
+      vim.ui.input = function(opts, cb)
+        cb(opts.default)
+      end
+      actions().rename(store().get(key(c)))
+      eq(nil, state().name(key(c)))
+      -- The agent retitles the chat later: the row follows.
+      c:title('Fix the parser and the lexer'):write()
+      store().refresh_sync()
+      eq('Fix the parser and the lexer', require('agent-chats.display').title(store().get(key(c))))
 
-    -- A name of your own stays, and can be confirmed without losing it.
-    vim.ui.input = function(_, cb)
-      cb('My name for it')
+      -- A name of your own stays, and can be confirmed without losing it.
+      vim.ui.input = function(_, cb)
+        cb('My name for it')
+      end
+      actions().rename(store().get(key(c)))
+      vim.ui.input = function(opts, cb)
+        cb(opts.default)
+      end
+      actions().rename(store().get(key(c)))
+      eq('My name for it', state().name(key(c)))
+      -- Emptied, it goes back to the agent's.
+      vim.ui.input = function(_, cb)
+        cb('')
+      end
+      actions().rename(store().get(key(c)))
+      vim.ui.input = real
+      eq(nil, state().name(key(c)))
     end
-    actions().rename(store().get(key(c)))
-    vim.ui.input = function(opts, cb)
-      cb(opts.default)
-    end
-    actions().rename(store().get(key(c)))
-    eq('My name for it', state().name(key(c)))
-    -- Emptied, it goes back to the agent's.
-    vim.ui.input = function(_, cb)
-      cb('')
-    end
-    actions().rename(store().get(key(c)))
-    vim.ui.input = real
-    eq(nil, state().name(key(c)))
-  end)
+  )
 
   it('says what to do instead when a key is pressed on a subagent row', function()
     local home = fx.home({ board = { spinner = false } })
@@ -1926,7 +1933,6 @@ describe('regressions: actions', function()
       'rename',
       'toggle_unread',
       'queue',
-      'pass',
     }) do
       local said = notes(function()
         actions()[name](sub)
@@ -1937,7 +1943,7 @@ describe('regressions: actions', function()
     vim.ui.input, vim.ui.select = real_input, real_select
     -- And nothing was saved under its name.
     no(state().pinned(sub.key))
-    eq(nil, state().archived_at(sub.key))
+    no(state().is_archived(sub.key, 0))
     eq({}, state().labels(sub.key))
     eq(nil, state().note(sub.key))
     eq(nil, state().name(sub.key))
@@ -2347,43 +2353,40 @@ describe('regressions: terminals', function()
     end
   end)
 
-  it(
-    'titles the pane with the chat from the first moment, and says when its agent has gone',
-    function()
-      local home = fx.home({
-        board = { spinner = false },
-        open = { start_insert = false, close_on_exit = false },
-      })
-      local c = chat(home, { title = 'Fix the parser', cwd = vim.uv.cwd() })
-      seen_everything()
-      local agent = fake.install(home)
-      store().refresh_sync()
-      store().start = function() end
-      board().open()
-      local buf = actions().open(store().get(key(c)))
-      local bar = vim.wo[board()._state.pane_win].winbar
-      has(bar, 'LIVE')
-      has(bar, 'Fix the parser')
-      -- From the first moment it also says how to get back: the key that
-      -- does it in the mode the terminal is in.
-      has(bar, 'q back')
-      T.typing(function()
-        has(vim.wo[board()._state.pane_win].winbar, [[<C-\><C-b> back]])
-      end)
-      ok(vim.fn.maparg([[<C-\><C-b>]], 't', false, true).buffer == 1)
-      T.wait(3000, function()
-        return agent.read():find('argv:', 1, true) ~= nil
-      end)
-      -- The agent is killed; its last screen stays up.
-      vim.fn.jobstop(vim.bo[buf].channel)
-      T.wait(3000, function()
-        return vim.wo[board()._state.pane_win].winbar:find('ENDED', 1, true) ~= nil
-      end)
-      bar = vim.wo[board()._state.pane_win].winbar
-      hasnt(bar, 'LIVE')
-      has(bar, 'the agent has exited')
+  it('names the way back from the first moment, and says when its agent has gone', function()
+    local home = fx.home({
+      board = { spinner = false },
+      open = { start_insert = false, close_on_exit = false },
+    })
+    local c = chat(home, { title = 'Fix the parser', cwd = vim.uv.cwd() })
+    seen_everything()
+    local agent = fake.install(home)
+    store().refresh_sync()
+    store().start = function() end
+    board().open()
+    local buf = actions().open(store().get(key(c)))
+    local function bar()
+      return vim.wo[board()._state.win].winbar
     end
-  )
+    -- The pane is the chat's, every line of it: the bar above the list
+    -- says how to get back, with the key that does it in the mode the
+    -- terminal is in.
+    eq('', vim.wo[board()._state.pane_win].winbar)
+    has(bar(), 'q%* Back')
+    T.typing(function()
+      has(bar(), [[<C-\><C-b>%* Back]])
+    end)
+    ok(vim.fn.maparg([[<C-\><C-b>]], 't', false, true).buffer == 1)
+    T.wait(3000, function()
+      return agent.read():find('argv:', 1, true) ~= nil
+    end)
+    -- The agent is killed; its last screen stays up.
+    vim.fn.jobstop(vim.bo[buf].channel)
+    T.wait(3000, function()
+      return bar():find('the agent has exited', 1, true) ~= nil
+    end)
+    has(bar(), 'q%* Back')
+  end)
 end)
 
 -- Found by driving the real agents. None of these could show with a
@@ -2635,7 +2638,7 @@ done
     end)
     ok(state().claim(key(c)) ~= nil, 'it is on its way')
 
-    -- Q straight after it: the index has not seen the chat busy yet.
+    -- A reply queued straight after it: the index has not seen the chat busy yet.
     eq('idle', store().get(key(c)).status)
     actions().queue(store().get(key(c)))
     api.nvim_buf_set_lines(api.nvim_get_current_buf(), 0, -1, false, { 'queued behind it' })
@@ -2927,7 +2930,6 @@ describe('regressions: where a reply goes', function()
       eq(nil, saved.labels[row.key])
       eq(nil, saved.notes[row.key])
       eq(nil, saved.archived[row.key])
-      eq(home.dir, home.dir)
     end
   )
 
@@ -2977,7 +2979,7 @@ describe('regressions: where a reply goes', function()
     hasnt(agent.read(), 'input: then run the linter')
     eq(1, #state().queue(key(c)))
 
-    -- Q offers to carry on.
+    -- "Queued replies" offers to carry on.
     board().focus()
     local real = vim.ui.select
     local offered
@@ -3263,47 +3265,6 @@ describe('regressions: second review', function()
     eq(1, count(T.buf_text(buf), 'hello to you'))
   end)
 
-  it('reaches every chat that needs you with ]a, folded away or past the end of a group', function()
-    local home = open_board({ board = { spinner = false, max_per_group = 2 } }, function(h)
-      chat(h, { title = 'Quiet one' })
-    end)
-    -- Four finished and unread (two of them past the group's cap), and one
-    -- waiting in a group that is folded.
-    state().update(function(s)
-      s.baseline = os.time() - 3000
-      s.seen = { ['claude:' .. select(2, next(store().chats)).id] = os.time() + 10 }
-    end)
-    local unread = {}
-    for i = 1, 4 do
-      unread[i] = chat(home, { title = 'Unread ' .. i, age = 10 * i })
-    end
-    local waiting = chat(home, { title = 'Waits for you', age = 5 })
-    home:registry(vim.uv.os_getpid(), {
-      sessionId = waiting.id,
-      status = 'waiting',
-      waitingFor = 'permission to use Bash',
-    })
-    store().refresh_sync()
-    state().set_collapsed('status:attention', true)
-    board().render()
-    hasnt(list(), 'Waits for you')
-    hasnt(list(), 'Unread 4')
-    local reached = {}
-    for _ = 1, 6 do
-      board().jump_attention(1)
-      local c = board().current()
-      reached[c and c.title or '?'] = true
-    end
-    for _, title in ipairs({ 'Waits for you', 'Unread 1', 'Unread 2', 'Unread 3', 'Unread 4' }) do
-      ok(reached[title], title .. ' is reached')
-    end
-    no(reached['Quiet one'])
-    -- And backwards, from the top.
-    api.nvim_win_set_cursor(board()._state.win, { 1, 0 })
-    board().jump_attention(-1)
-    eq('Unread 4', board().current().title)
-  end)
-
   it('moves in the view of the list that the key was typed in', function()
     local home = open_board(nil, function(h)
       chat(h, { title = 'Chat A', age = 100 })
@@ -3321,7 +3282,7 @@ describe('regressions: second review', function()
     vim.cmd('split')
     local second = api.nvim_get_current_win()
     local kept = api.nvim_win_get_cursor(first)[1]
-    board().jump_attention(1)
+    board().goto_chat(key(waiting))
     eq('Waits for you', board()._state.rows[api.nvim_win_get_cursor(second)[1]].chat.title)
     eq(kept, api.nvim_win_get_cursor(first)[1], 'the other view stays where it was')
     -- The pane shows what this view is on.
@@ -3730,7 +3691,7 @@ describe('regressions: your own keys', function()
     local bar = vim.wo[board()._state.win].winbar
     has(bar, ':Chats menu')
     hasnt(bar, 'Enter')
-    hasnt(list(), 'new chat')
+    hasnt(list(), 'New Chat')
     vim.cmd('runtime plugin/agent-chats.lua')
     vim.cmd('Chats menu')
     ok(require('agent-chats.ui.menu').is_open())

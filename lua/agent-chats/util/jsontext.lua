@@ -451,9 +451,4 @@ function M.comments(text)
   return out
 end
 
---- Whether a comment is written inside a node.
-function M.has_comment(text, node)
-  return #M.comments(text:sub(node.s, node.e)) > 0
-end
-
 return M

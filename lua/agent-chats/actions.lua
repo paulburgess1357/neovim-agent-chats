@@ -89,22 +89,15 @@ local function is_unnamed(chat)
   return true
 end
 
---- A session that has not been sent a prompt has no conversation to act
---- on. Says so for one and returns true.
-local function is_blank(chat, what)
-  if not chat.stub then
-    return false
-  end
-  info(('Nothing has been said in this chat yet, so there is nothing to %s.'):format(what))
-  return true
-end
-
 local function enter_terminal(buf, chat)
+  -- The key that goes back to the list is there wherever the terminal is:
+  -- in the board's pane, or in a window of the user's own.
+  term.prepare(buf, chat)
   local win = term.show(buf)
   if win then
     pcall(vim.api.nvim_win_set_cursor, win, { vim.api.nvim_buf_line_count(buf), 0 })
-    -- In the board's pane the title now says how to get back to the list.
-    board().pane_entered(buf, chat)
+    -- In the board's pane, the bar now says how to get back to the list.
+    board().pane_entered(buf)
     term.start_typing(buf)
   end
   return win
@@ -113,10 +106,9 @@ end
 --- What to say about a chat whose folder is no longer there: its agent
 --- cannot be started in it, and no agent resumes a chat from anywhere else.
 local function folder_gone(chat)
-  return ('The folder of “%s” is gone (%s), so it cannot be resumed. It can still be read%s.'):format(
+  return ('The folder of “%s” is gone (%s), so it cannot be resumed. It can still be read.'):format(
     display.title(chat, 40),
-    fs.tilde(chat.cwd),
-    config.hint('pass', ', and %s passes it on to a new chat in a folder you choose')
+    fs.tilde(chat.cwd)
   )
 end
 
@@ -172,8 +164,9 @@ function M.open(chat)
     return nil
   end
   if chat.cwd and not fs.is_dir(chat.cwd) then
-    -- Nothing to go into; what was said is still there to read.
-    info(folder_gone(chat))
+    -- Nothing to go into; what was said is still there to read. No message:
+    -- the bar names Enter as reading it, and the summary and the heading
+    -- the chat is under say why.
     M.read(chat)
     return nil
   end
@@ -647,11 +640,18 @@ function M.queue(chat)
   )
   if why then
     -- Nothing can be sent to it from here: what is left is to let them go.
-    prompt = prompt
-      .. (
-        chat.live and '. It runs outside this Neovim, so nothing can be sent to it from here'
-        or '. Its folder is gone, so it cannot be resumed to send them'
-      )
+    local reason
+    if term.find(chat) then
+      reason = 'Which terminal it is in is a guess, so nothing is typed into it from here'
+    elseif chat.live and term.in_background(chat) then
+      reason =
+        'A reply to it is being answered in the background, so nothing can be sent until that is done'
+    elseif chat.live then
+      reason = 'It runs outside this Neovim, so nothing can be sent to it from here'
+    else
+      reason = 'Its folder is gone, so it cannot be resumed to send them'
+    end
+    prompt = prompt .. '. ' .. reason
   end
   vim.ui.select(choices, {
     prompt = prompt,
@@ -830,7 +830,11 @@ function M.move(chat, done)
       elseif item.new then
         return 'A new group…'
       end
-      -- Out of every group: where its status puts it.
+      -- Out of every group: where its status puts it. (Not a chat whose
+      -- folder is filtered out: that one is where it was all along.)
+      if config.filtered(chat.cwd) then
+        return 'No group'
+      end
       return ('No group: back under “%s”'):format(
         require('agent-chats.status').labels[chat.status] or 'its status'
       )
@@ -888,20 +892,14 @@ function M.yank(chat)
     return info('This chat has not been sent a prompt yet, so there is nothing to resume.')
   end
   if not p or chat.subagent or chat.stub then
-    return M.yank_id(chat)
+    -- Nothing to resume: its id is what there is to copy.
+    return copy(chat.id, 'the id')
   end
   local cmd = text.cmdline(p.resume_cmd(chat))
   if chat.cwd then
     cmd = ('cd %s && %s'):format(vim.fn.shellescape(chat.cwd), cmd)
   end
   copy(cmd, 'the resume command')
-end
-
-function M.yank_id(chat)
-  if chat.unstarted then
-    return info('This chat has not been sent a prompt yet, so it has no id.')
-  end
-  copy(chat.id, 'the id')
 end
 
 -----------------------------------------------------------------------------
@@ -940,10 +938,10 @@ function M.diff(chat)
       pcall(vim.api.nvim_buf_delete, buf, { force = true })
       b.focus()
     end, 'back to the list')
+    vim.b[buf].agent_chats_key = chat.key
     b.pane_show(buf, 'diff', function()
       -- Closing the window goes back too, whatever is mapped.
-      local back = keys.shown(keys.still(buf, 'n', bound)) or ':q'
-      return { 'Uncommitted changes in ' .. fs.tilde(chat.cwd), { { back .. ' back', 1 } } }
+      return { { keys.shown(keys.still(buf, 'n', bound)) or ':q', 'Back' } }
     end)
   end)
 end
@@ -952,10 +950,9 @@ end
 -- Starting chats
 -----------------------------------------------------------------------------
 
---- Start a new chat with agent `p` in `cwd`. `name`: what to call it until
---- its agent has given it a title of its own.
----@param gone fun(code: integer)?  The agent exited as soon as it was started: what it was started with has not been taken.
-local function start(p, cwd, prompt, gone)
+--- Start a new chat with agent `p` in `cwd`, with `prompt` as the first
+--- thing said to it when there is one.
+local function start(p, cwd, prompt)
   local id = p.preassign_id and text.uuid() or nil
   prompt = (prompt and prompt ~= '') and prompt or nil
   local buf, err = term.spawn({
@@ -967,17 +964,13 @@ local function start(p, cwd, prompt, gone)
     -- Called by what it was asked from the first moment, as its row will be.
     label = {
       agent = p.label,
-      -- (Its first line, as its row has it: notes for a chat that is
-      -- passed on are a page long.)
+      -- (Its first line, as its row has it: a prompt can be a page long.)
       name = (prompt and text.oneline(text.first_line(prompt) or prompt, 60)) or 'new chat',
       dir = cwd,
     },
     prompt = prompt,
     on_quick_exit = prompt and function(code)
       warn(('%s exited as soon as it was started (code %d).'):format(p.label, code))
-      if gone then
-        gone(code)
-      end
     end or nil,
   })
   if err then
@@ -1071,12 +1064,11 @@ local function recent_folders(chat, from)
   return out
 end
 
---- Ask where an agent should work: a folder used lately, a new git
+--- Ask where a new chat should work: a folder used lately, a new git
 --- worktree, or any folder. `cb(dir)`, or `cb(nil)` when called off.
 ---@param chat agent_chats.Chat?  The chat under the cursor, whose folder is offered.
----@param prompt string?
 ---@param from string?  The folder chosen so far: a new worktree is made of the repository it is in, and "another folder" starts from it.
-local function pick_folder(label, chat, cb, prompt, from)
+local function pick_folder(chat, cb, from)
   if not (from and fs.is_dir(from)) then
     from = chat and chat.cwd and fs.is_dir(chat.cwd) and chat.cwd or vim.fn.getcwd()
   end
@@ -1096,7 +1088,7 @@ local function pick_folder(label, chat, cb, prompt, from)
   end
   items[#items + 1] = { label = 'Another folder…', other = true }
   vim.ui.select(items, {
-    prompt = prompt or ('Where should ' .. label .. ' work?'),
+    prompt = 'Where should the new chat work?',
     format_item = function(item)
       return item.label
     end,
@@ -1205,11 +1197,11 @@ function M.new(opts)
         return
       end
       if choice.folder then
-        return pick_folder('the new chat', opts.chat, function(picked)
+        return pick_folder(opts.chat, function(picked)
           -- Back to the agents, for the folder that was chosen (the one
           -- before, when none was).
           ask(picked or dir)
-        end, nil, dir)
+        end, dir)
       end
       start(choice.agent, dir, opts.prompt)
     end)
@@ -1218,146 +1210,60 @@ function M.new(opts)
 end
 
 -----------------------------------------------------------------------------
--- Passing a chat to another agent
+-- A group of your own, as a whole
 -----------------------------------------------------------------------------
 
---- Notes that let another agent pick up where this chat stopped.
----@param chat agent_chats.Chat
----@param messages agent_chats.Message[]
----@param dir string?  The folder the new chat works in, when it is not the chat's own (which is gone).
----@return string
-function M.notes_for(chat, messages, dir)
-  local turns = {}
-  for _, m in ipairs(messages) do
-    if (m.role == 'user' or m.role == 'assistant') and m.text and vim.trim(m.text) ~= '' then
-      -- Not the commands typed to the agent's own program (`/exit`,
-      -- `/model x`): they say nothing about the task.
-      local command = m.command or (m.role == 'user' and vim.trim(m.text):match('^/[%w%-_:]+$'))
-      if not command then
-        turns[#turns + 1] = m
-      end
-    end
-  end
-  local moved = type(dir) == 'string' and dir ~= chat.cwd
-  local out = {
-    -- The first line is what the new chat is called on the board (an agent
-    -- titles a chat by its first prompt), so it names the task.
-    ('Taking over “%s” from %s.'):format(
-      display.title(chat, 70),
-      providers.label(chat.provider)
-    ),
-    '',
-    'You are taking over a task from another coding agent. What it was first asked and the most recent exchanges of its conversation are below, as they were said.',
-    'Start by checking the current state of the working tree (git status, git diff), then continue the task.',
-    '',
-  }
-  if moved then
-    -- The folder the work was done in is gone: naming it as the place to
-    -- look would send the agent to nothing.
-    out[#out + 1] = 'Folder: ' .. dir
-    out[#out + 1] = ('(The other agent worked in %s, which is no longer there.)'):format(
-      chat.cwd or 'a folder that is not known'
-    )
-  else
-    out[#out + 1] = 'Folder: '
-      .. (chat.cwd or '(unknown)')
-      .. (
-        (chat.branch and chat.branch ~= '' and chat.branch ~= 'HEAD')
-          and ('   Branch: ' .. chat.branch)
-        or ''
-      )
-  end
-  if chat.first_prompt then
-    vim.list_extend(out, { '', 'Original request:', text.clip(chat.first_prompt, 2000) })
-  end
-  local keep = 8
-  local from = math.max(1, #turns - keep + 1)
-  if #turns > 0 then
-    out[#out + 1] = ''
-    out[#out + 1] = from > 1
-        and ('Most recent exchanges (%d earlier ones left out):'):format(from - 1)
-      or 'Conversation:'
-    for i = from, #turns do
-      local m = turns[i]
-      out[#out + 1] = ''
-      out[#out + 1] = (m.role == 'user' and '[user] ' or '[agent] ')
-        .. text.clip(vim.trim(m.text), 1500)
-    end
-  end
-  return table.concat(out, '\n')
-end
-
---- Pass the chat to another agent: a new chat with the agent you pick, in
---- the same folder, started with notes on this one that you can edit first.
-function M.pass(chat)
-  if is_part(chat, 'passed on', 'pass on') or is_blank(chat, 'pass on') then
-    return
-  end
-  local source = providers.get(chat.provider)
-  local targets = {}
-  for _, p in ipairs(providers.enabled()) do
-    if providers.executable(p.name) then
-      targets[#targets + 1] = p
-    end
-  end
-  if not source or #targets == 0 then
-    return warn('No agent to pass this chat to: none of the enabled ones is on PATH.')
-  end
-  vim.ui.select(targets, {
-    prompt = 'Pass this chat to',
-    format_item = function(p)
-      return p.label .. (p.name == chat.provider and ' (a fresh chat with the same agent)' or '')
-    end,
-  }, function(target)
-    if not target then
+--- Give the group called `name` another name: its chats go with it.
+--- `done(new)` when that has happened.
+---@param done fun(new: string)?
+function M.rename_group(name, done)
+  vim.ui.input({ prompt = ('New name for “%s”: '):format(name), default = name }, function(new)
+    -- One line, and no longer than a heading can show: it is a heading.
+    new = new and text.oneline(vim.trim(new), 40) or ''
+    if new == '' or new == name then
       return
     end
-    local function write_notes(dir)
-      async.run(function()
-        return source.messages(chat, {})
-      end, function(ok, messages)
-        if not ok then
-          return warn('Could not read the conversation: ' .. tostring(messages))
-        end
-        -- Notes that were edited and then not sent (the box was left, the
-        -- agent did not start) are there the next time.
-        local kept_as = '\0pass:' .. chat.key .. ':' .. target.name
-        local written = M.notes_for(chat, messages, dir)
-        local function keep(notes)
-          drafts[kept_as] = notes
-          info('Your notes are kept: they are there when you pass this chat on again.')
-        end
-        require('agent-chats.ui.input').open({
-          title = ('Notes for %s in %s (edit, then send)'):format(target.label, fs.short(dir, 44)),
-          text = drafts[kept_as] or written,
-          height = 22,
-          -- There to be read and changed, not written from nothing.
-          review = true,
-        }, function(notes, typed)
-          if notes then
-            drafts[kept_as] = nil
-            local function gone()
-              keep(notes)
-            end
-            if not start(target, dir, notes, gone) then
-              keep(notes)
-            end
-          elseif typed and vim.trim(typed) ~= '' and typed ~= written then
-            keep(typed)
-          end
-        end)
-      end)
+    local joined = vim.tbl_contains(state.groups(), new)
+    state.rename_group(name, new)
+    changed()
+    if joined then
+      info(('There was a group called “%s” already: the chats are in it now.'):format(new))
     end
-    if chat.cwd and fs.is_dir(chat.cwd) then
-      return write_notes(chat.cwd)
+    if done then
+      done(new)
     end
-    -- Its own folder is gone (or was never known): this is the one case
-    -- where the new chat has to start somewhere else, so it is asked.
-    pick_folder(target.label, nil, function(dir)
-      if dir then
-        write_notes(dir)
-      end
-    end, ('The folder of this chat is gone. Where should %s work?'):format(target.label))
+  end)
+end
+
+--- Take every chat out of the group called `name`, which is then gone: a
+--- group is nothing but its chats. Asked first: there is no taking it back
+--- but by putting each chat in again.
+function M.empty_group(name)
+  local count = 0
+  for _, grouped in pairs(state.get().groups) do
+    count = count + (grouped == name and 1 or 0)
+  end
+  if count == 0 then
+    return
+  end
+  vim.ui.select({ true, false }, {
+    prompt = ('Take %s out of “%s”? The group is gone then.'):format(
+      count == 1 and 'the chat' or ('all %d chats'):format(count),
+      name
+    ),
+    format_item = function(yes)
+      return yes and 'Yes: listed by status again' or 'No: leave the group as it is'
+    end,
+  }, function(yes)
+    if not yes then
+      return
+    end
+    state.rename_group(name, nil)
+    changed()
+    info(
+      count == 1 and ('“%s” is gone. Its chat is listed by its status again.'):format(name)
+        or ('“%s” is gone. Its %d chats are listed by their status again.'):format(name, count)
+    )
   end)
 end
 
@@ -1385,12 +1291,13 @@ end
 -- From anywhere
 -----------------------------------------------------------------------------
 
---- Chats that want you, most urgent first.
+--- Chats that want you, most urgent first. Not those in folders the
+--- options filter out: they are kept from asking for anything.
 ---@return agent_chats.Chat[]
 function M.waiting()
   local out = {}
   for _, chat in ipairs(store.list()) do
-    if chat.status == 'attention' or chat.status == 'done' then
+    if (chat.status == 'attention' or chat.status == 'done') and not config.filtered(chat.cwd) then
       out[#out + 1] = chat
     end
   end

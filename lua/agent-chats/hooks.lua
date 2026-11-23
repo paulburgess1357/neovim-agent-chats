@@ -1007,7 +1007,4 @@ function M.manual(name)
   return out
 end
 
-M._json_after = json_after
-M._MARK = MARK
-
 return M

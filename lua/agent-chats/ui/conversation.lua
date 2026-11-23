@@ -33,7 +33,6 @@ local M = {}
 ---@field shown agent_chats.ConversationItem[]?  For such a reader: what is drawn, in order.
 ---@field marks table[]?        ... and where each began, with the state to draw it again from there.
 ---@field mtime number?
----@field failed number?
 ---@field timer uv.uv_timer_t?
 ---@field loading boolean
 ---@field fold_key string?      The key that opens and closes a tool call here, for the fold's own line.
@@ -318,7 +317,6 @@ local function load(buf, done)
       st.mtime = chat.mtime
       -- Say it once, not on every poll.
       if st.note ~= 'failed' then
-        st.failed = chat.mtime
         local lines = first and header(chat) or {}
         local from = first and 1 or (last - st.tail + 1)
         if first then
@@ -331,7 +329,6 @@ local function load(buf, done)
       end
       return
     end
-    st.failed = nil
 
     -- A window at the end of the conversation follows it.
     local following = {}
@@ -577,7 +574,6 @@ function M.open(chat, opts)
   local back = bind('back', leave, 'back to the list')
   local chat_actions = {
     'queue',
-    'pass',
     'diff',
     'rename',
     'pin',
@@ -641,12 +637,11 @@ function M.open(chat, opts)
     return keys.canon(lhs) ~= keys.canon('<CR>')
   end, folds)
 
-  -- The title names the keys this buffer has, as many as fit: the way back
-  -- first, the prompts last. It is asked again when keys change (one of
-  -- them gave way to a mapping of yours), so it never names one that is
-  -- not this view's any more.
-  local function title()
-    local hints = {}
+  -- The bar above the list names the keys this buffer has, as many as
+  -- fit: the way back first, the prompts after it. It is asked again when
+  -- keys change (one of them gave way to a mapping of yours), so it never
+  -- names one that is not this view's any more.
+  local function hints()
     local function still(list)
       return keys.shown(keys.still(buf, 'n', list))
     end
@@ -654,24 +649,20 @@ function M.open(chat, opts)
     if states[buf] then
       states[buf].fold_key = still(folds)
     end
-    local function hint(list, word, rank)
-      local key = still(list)
-      if key then
-        hints[#hints + 1] = { key .. ' ' .. word, rank }
-      end
-    end
     -- Closing the window is the way back whatever is mapped: with no key
-    -- for it, that is what the title says.
-    hints[1] = { (still(back) or ':q') .. ' back', 1 }
+    -- for it, that is what the bar says.
+    local out = { { still(back) or ':q', 'Back' } }
     local down, up = still(next_prompt), still(prev_prompt)
     if down and up then
-      hints[#hints + 1] = { ('%s %s prompts'):format(down, up), 4 }
+      out[#out + 1] = { down .. ' ' .. up, 'Prompts' }
     end
-    hint(menu, 'menu', 2)
-    return { 'Conversation', hints }
+    out.menu = still(menu)
+    return out
   end
 
-  local win = board.pane_show(buf, 'conversation', title)
+  -- Whose conversation this is: the list marks that chat's row.
+  vim.b[buf].agent_chats_key, vim.b[buf].agent_chats_parent = chat.key, chat.parent
+  local win = board.pane_show(buf, 'conversation', hints)
   if not win then
     close(buf)
     pcall(api.nvim_buf_delete, buf, { force = true })

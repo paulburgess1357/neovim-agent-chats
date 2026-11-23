@@ -22,7 +22,6 @@ local M = {}
 ---@field owned boolean    Started as the terminal's own job (so the job ending means the chat ended).
 ---@field trust number?    For terminals opened by a user function: epoch seconds until which `key` is believed without a process to confirm it.
 ---@field title string?
----@field label (string|table)?  What it runs, for a window title: a chat, `{ agent, name, dir }`, or words.
 ---@field prompt string?   The first prompt a new chat was started with.
 
 ---@type table<integer, agent_chats.Term>
@@ -185,14 +184,13 @@ end
 --- when nil). Returns the window and the buffer.
 ---@param where string
 ---@param buf integer?
----@param label string?  What the terminal is for, for a window title.
 ---@return integer win, integer buf
-function M.open_window(where, buf, label)
+function M.open_window(where, buf)
   local cfg = config.get().open
   buf = buf or vim.api.nvim_create_buf(true, false)
   if where == 'pane' then
     -- The board's right-hand pane; the board opens if it is not already.
-    local win = require('agent-chats.ui.board').pane_show(buf, 'term', nil, label)
+    local win = require('agent-chats.ui.board').pane_show(buf, 'term')
     if win then
       return win, buf
     end
@@ -246,6 +244,33 @@ function M.open_window(where, buf, label)
   return win, buf
 end
 
+--- A window that shows terminal `buf` and is not the board's pane: one of
+--- this tab before one of another. nil when there is none (the terminal
+--- is out of sight, or the pane is all that shows it).
+---
+--- The board keeps to one window per terminal. Neovim sizes a terminal for
+--- the largest window that shows it, so a second window on one that is on
+--- screen already is cut off, or leaves the first one cut off; and it
+--- would be a second window of the user's own terminal, with their keys
+--- and autocommands for that buffer acting on the pane.
+---@return integer?
+function M.window_of(buf)
+  if not valid(buf) then
+    return nil
+  end
+  local here = vim.api.nvim_get_current_tabpage()
+  local found
+  for _, win in ipairs(vim.fn.win_findbuf(buf)) do
+    if not vim.w[win].agent_chats_pane then
+      if vim.api.nvim_win_get_tabpage(win) == here then
+        return win
+      end
+      found = found or win
+    end
+  end
+  return found
+end
+
 --- Put the cursor in the window showing `buf`, opening one if it is hidden.
 ---@return integer? win
 function M.show(buf)
@@ -253,16 +278,12 @@ function M.show(buf)
     return nil
   end
   local cfg = config.get().open
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    if vim.api.nvim_win_get_buf(win) == buf then
-      vim.api.nvim_set_current_win(win)
-      return win
-    end
-  end
-  local elsewhere = vim.fn.win_findbuf(buf)[1]
-  if elsewhere then
-    vim.api.nvim_set_current_win(elsewhere)
-    return elsewhere
+  -- Where it is on screen already, in whichever tab; failing that, the
+  -- board's pane when that is what shows it.
+  local shown = M.window_of(buf) or vim.fn.win_findbuf(buf)[1]
+  if shown then
+    vim.api.nvim_set_current_win(shown)
+    return shown
   end
   local where = type(cfg.where) == 'string' and cfg.where or 'vsplit'
   local win = M.open_window(where, buf)
@@ -413,7 +434,7 @@ function M.prepare(buf, chat)
       end)
     elseif ok and type(said) == 'table' then
       -- Keys of its own that go back to the list, which it vouches for:
-      -- the title names them in place of the ones it mapped over.
+      -- the bar names them in place of the ones it mapped over.
       local function key(lhs)
         return type(lhs) == 'string' and lhs ~= '' and lhs or false
       end
@@ -430,7 +451,7 @@ function M.prepare(buf, chat)
         complained = true
         vim.schedule(function()
           vim.notify(
-            ('agent-chats: open.on_open returned %s, but nothing of yours is mapped there in the terminal, so the title does not name it'):format(
+            ('agent-chats: open.on_open returned %s, but nothing of yours is mapped there in the terminal, so the bar does not name it'):format(
               table.concat(unmapped, ' and ')
             ),
             vim.log.levels.WARN
@@ -460,7 +481,7 @@ function M.back_keys(buf)
   typing = type(typing) == 'string' and keys.is_ours(buf, 't', typing) and typing or nil
   normal = type(normal) == 'string' and keys.is_ours(buf, 'n', normal) and normal or nil
   -- What `open.on_open` said its own mappings are comes first, where there
-  -- is a mapping of yours on the key it named: a title must not name a key
+  -- is a mapping of yours on the key it named: the bar must not name a key
   -- that does nothing.
   local said = vim.b[buf].agent_chats_said
   if type(said) == 'table' then
@@ -480,7 +501,7 @@ end
 ---@field key string?       Chat key, when it is known before the agent starts.
 ---@field provider string?
 ---@field title string?
----@field label (string|table)?  What it runs, for a window title: a chat, `{ agent, name, dir }`, or words; `title` when nil.
+---@field label (string|table)?  What it runs, for the name of its buffer: a chat, `{ agent, name, dir }`, or words; `title` when nil.
 ---@field prompt string?    The first prompt, for a chat that is new.
 ---@field on_quick_exit fun(code: integer)?  Called when the agent exits within a few seconds of starting: it did not do what it was started for.
 ---@field chat agent_chats.Chat?
@@ -524,7 +545,6 @@ function M.spawn(spec)
         owned = false,
         trust = os.time() + 20,
         title = spec.title,
-        label = spec.label,
       }
       M.prepare(buf, spec.chat)
       return buf, nil
@@ -532,7 +552,7 @@ function M.spawn(spec)
     return nil, nil
   end
 
-  local win, buf = M.open_window(cfg.where, nil, spec.label or spec.title)
+  local win, buf = M.open_window(cfg.where)
   local ok, job = pcall(vim.api.nvim_buf_call, buf, function()
     return vim.fn.jobstart(spec.argv, {
       term = true,
@@ -567,18 +587,17 @@ function M.spawn(spec)
     provider = spec.provider,
     owned = true,
     title = spec.title,
-    label = spec.label,
     prompt = spec.prompt,
     cwd = spec.cwd,
     started = os.time(),
   }
   vim.b[buf].agent_chats = true
   M.prepare(buf, spec.chat)
-  -- The pane was titled before there was a terminal in it: now it can say
-  -- how to get back.
+  -- The bar was drawn before there was a terminal in the pane: now it can
+  -- say how to get back.
   local shown = package.loaded['agent-chats.ui.board']
   if shown then
-    shown.pane_entered(buf, spec.chat or spec.label or spec.title)
+    shown.pane_entered(buf)
   end
   if spec.title then
     -- Named as the conversation of a chat is ("Agent chat: ..."), and not
@@ -651,7 +670,7 @@ end
 
 -- Chats a reply is being answered for in the background right now (their
 -- agent runs with no terminal): chat key -> the process.
-local backgrounds = {} ---@type table<string, { pid: integer, started: integer }>
+local backgrounds = {} ---@type table<string, { pid: integer }>
 
 --- Whether a reply to `chat` that was sent from here is being answered in
 --- the background at this moment. Such a chat is running, and not in any
@@ -710,7 +729,7 @@ function M.background(spec, cb)
     return false, tostring(err)
   end
   if spec.key then
-    backgrounds[spec.key] = { pid = job.pid, started = os.time() }
+    backgrounds[spec.key] = { pid = job.pid }
   end
   return true, nil, job.pid
 end
@@ -991,7 +1010,8 @@ end
 --- is sent.
 ---
 --- `done(ok, why)`: `why` is "unseen" when the terminal never showed the
---- text, "closed" when it went away meanwhile.
+--- text, "closed" when it went away meanwhile, "busy" when another reply
+--- is being typed into it at this moment.
 ---@param done fun(ok: boolean, why: string?)?
 ---@return boolean started  false when there is no terminal to type into.
 function M.send(buf, message, done)
@@ -1167,7 +1187,7 @@ function M.setup()
     -- Enter and printable keys are an answer to what the agent asked.
     local b = k:byte()
     if #k == 1 and (b == 13 or (b >= 32 and b <= 126)) then
-      typed[buf] = wall_clock()
+      M.note_typed(buf)
     end
     M.note_key(buf, k)
   end, key_ns)

@@ -1,14 +1,16 @@
--- The summary shown in the board's pane for a chat that has no terminal in
--- this Neovim. From the top it answers: what state is it in and what does
--- it want from you; where is it; what did you first ask; what did you last
--- ask; how far did it get.
+-- The summary shown in the board's pane for a chat whose live terminal is
+-- not there: it has none in this Neovim, or the one it has is on screen in
+-- a window of the user's own. From the top it answers: what state is it in
+-- and what does it want from you; where is it; what did you first ask;
+-- what did you last ask; how far did it get.
 --
 --   # Fix flaky session restore
 --
 --   ● Needs you: permission to run: rm -rf .cache/sessions
 --
 --   Folder  ~/work/nvim-config · main
---   Agent   Claude · started 14:02
+--   Agent   Claude · opus
+--   Started 14:02
 --
 --   ## First prompt
 --   ...
@@ -59,16 +61,17 @@ end
 ---@return string[]
 local function guide(width)
   width = width or 76
+  -- Each under the name the bar above the list gives it.
   local rows = {
-    { 'open', 'go into a chat and type (one that ended is resumed, in its folder)' },
-    { 'queue', 'queue a reply for when the chat finishes its turn' },
-    { 'read', 'read the whole conversation' },
-    { 'new', 'new chat: pick the agent, and it opens' },
-    { 'pass', 'pass a chat to another agent' },
-    { 'search', 'search every chat, inside the conversations too' },
-    { 'notify', 'notifications on or off' },
-    { 'back', 'back: out of a conversation, a search, the board' },
-    { 'menu', 'the menu: everything else, for this chat and for the board' },
+    { 'open', 'Open: go into a chat and type (one that ended is resumed, in its folder)' },
+    { 'queue', 'Queue a Reply: for when the chat finishes its turn' },
+    { 'read', 'Conversation: read the whole of it' },
+    { 'new', 'New Chat: pick the agent, and it opens' },
+    { 'search', 'Search: every chat, inside the conversations too' },
+    { 'refresh', 'Refresh: look for changes now (the list also does so by itself)' },
+    { 'notify', 'Notifications: on or off' },
+    { 'back', 'Back: out of a conversation, a search, the board' },
+    { 'menu', 'Menu: everything else, for this chat and for the board' },
   }
   local shown, widest = {}, 0
   local function row(key, words)
@@ -92,12 +95,15 @@ local function guide(width)
   return out
 end
 
---- Whether every letter the board acts on is a capital, as it is by default.
+--- Whether every letter the board acts on is a capital, as it is by
+--- default. ("Back" aside: its `q` is named where this is said.)
 local function capitals()
-  for _, action in ipairs({ 'queue', 'read', 'pass', 'search', 'notify' }) do
-    for _, lhs in ipairs(keys.of(action)) do
-      if lhs:match('^%l$') then
-        return false
+  for action in pairs(config.get().keys) do
+    if action ~= 'back' then
+      for _, lhs in ipairs(keys.of(action)) do
+        if lhs:match('^%l$') then
+          return false
+        end
       end
     end
   end
@@ -145,7 +151,7 @@ function M.intro(width)
   end
   out[#out + 1] = ''
   say(
-    ('Marks on a row: %s2 two replies wait to be sent to it · %s it runs outside this Neovim · %s it has a note of yours.'):format(
+    ('Marks on a row: %s2 two replies wait to be sent to it · %s it runs outside this Neovim · %s a note of yours.'):format(
       icons.queue,
       icons.elsewhere,
       icons.note
@@ -154,17 +160,37 @@ function M.intro(width)
   return out
 end
 
+--- Where the terminal `buf` is on screen, seen from tab `tab`, in words;
+--- nil when no window of the user's shows it.
+---@return string?
+local function on_screen(buf, tab)
+  local win = require('agent-chats.term').window_of(buf)
+  if not win then
+    return nil
+  end
+  local its = vim.api.nvim_win_get_tabpage(win)
+  if its == (tab or vim.api.nvim_get_current_tabpage()) then
+    return 'in another window of this tab'
+  end
+  return ('in tab %d'):format(vim.api.nvim_tabpage_get_number(its))
+end
+
 --- The sentence that says what state `chat` is in and what follows from
 --- it, and the lines that go with it. `hl` is the highlight of the first.
+---@param tab integer?  The tab the summary is shown in.
 ---@return string[] lines, string hl
-local function state_lines(chat, now)
+local function state_lines(chat, now, tab)
   local icons = config.get().icons
   local st = chat.status or 'ended'
   local glyph = icons[st] or ''
   local hl = status.hl[st] or 'AgentChatsIdle'
   local label = status.labels[st] or st
   local since = time.since(chat.updated, now)
-  local hosted = require('agent-chats.term').find(chat) ~= nil
+  local term = require('agent-chats.term').find(chat)
+  local hosted = term ~= nil
+  -- A summary for a chat that runs in a terminal here: the terminal is on
+  -- screen in a window of the user's, and stays there.
+  local where = term and on_screen(term, tab) or nil
   local out = {}
   if st == 'attention' then
     local store = package.loaded['agent-chats.store']
@@ -183,7 +209,7 @@ local function state_lines(chat, now)
     for i = 1, math.min(#waiting, 5) do
       out[#out + 1] = '  ' .. text.oneline(waiting[i], 200)
     end
-    if hosted then
+    if hosted and not where then
       local go = config.hint('open', '%s goes to it to answer.')
       if go ~= '' then
         out[#out + 1] = '  ' .. go
@@ -218,8 +244,13 @@ local function state_lines(chat, now)
     else
       out[#out + 1] = '  Its folder is gone, so it cannot be resumed.'
         .. config.hint('open', ' %s reads it.')
-        .. config.hint('pass', ' %s passes it on to a new chat in another folder.')
     end
+  end
+  if where then
+    out[#out + 1] = ('  Its terminal is open %s.%s'):format(
+      where,
+      config.hint('open', st == 'attention' and ' %s goes there to answer.' or ' %s goes there.')
+    )
   end
   if chat.live and not hosted and not chat.subagent then
     if require('agent-chats.term').in_background(chat) then
@@ -255,6 +286,10 @@ local function facts(chat, now)
     end
     if not fs.is_dir(chat.cwd) then
       parts[#parts + 1] = 'gone'
+    end
+    -- Why it is where it is in the list.
+    if not chat.subagent and config.filtered(chat.cwd) then
+      parts[#parts + 1] = 'filtered out in the options'
     end
     fact('Folder', table.concat(parts, ' · '))
   else
@@ -340,12 +375,41 @@ end
 ---@param chat agent_chats.Chat?
 ---@param row table?  The board row, for search hits.
 ---@param width integer?  The cells there are for a line: what says where the chat stands is fitted to them, each line going on under its own words. (What was said in the chat is left to the window to wrap.)
+---@param tab integer?  The tab the summary is shown in ("in tab 2" is said from there); the current one when nil.
 ---@return string[] lines, { [1]: integer, [2]: integer, [3]: integer, [4]: string }[] marks  0-based line, start and end column, highlight.
-function M.lines(chat, row, rows, width)
+function M.lines(chat, row, rows, width, tab)
   if not chat then
     if row and row.kind == 'group' then
       local fold = keys.key('open') or keys.key('toggle')
-      return { '', fold and ('  %s folds and unfolds this group.'):format(fold) or '' }, {}
+      local out = { '', fold and ('  %s folds and unfolds this group.'):format(fold) or '' }
+      local function say(words)
+        out[#out + 1] = ''
+        for _, piece in ipairs(text.wrap(words, math.max(30, (width or 76) - 5))) do
+          out[#out + 1] = '  ' .. piece
+        end
+      end
+      if row.filtered then
+        -- A group that nobody made on the board: where it comes from,
+        -- what it does, and how a chat gets out of it.
+        say(
+          ('These chats are in folders that the options filter out (filter_out): %s.'):format(
+            table.concat(config.get().filter_out, ', ')
+          )
+        )
+        say(
+          ('They are left out of the counts and the notifications, and %s does not go to them. A search still finds them.'):format(
+            config.command('next')
+          )
+        )
+        say('Take a folder out of filter_out, and its chats are back among the others.')
+      elseif row.gone then
+        -- The other one: why these are apart from "Ended".
+        say(
+          'The folders these chats were in are no longer there. An agent takes a chat up again only in the folder it was in, so these can be read and not resumed.'
+        )
+        say('When a folder is there again, its chats are back among the others.')
+      end
+      return out, {}
     end
     if row and (row.kind == 'more' or row.kind == 'older') then
       local show = keys.key('open')
@@ -392,7 +456,7 @@ function M.lines(chat, row, rows, width)
     end
     return lines
   end
-  local sentence, hl = state_lines(chat, now)
+  local sentence, hl = state_lines(chat, now, tab)
   for i, line in ipairs(sentence) do
     for n, piece in ipairs(fitted(line, i == 1 and 0 or 2, 2)) do
       if i == 1 and n == 1 then
@@ -479,9 +543,10 @@ function M.show(buf, lines, marks)
   end
 end
 
---- Fill `buf` with the summary of `chat`, for a pane `width` cells wide.
-function M.render(buf, chat, row, rows, width)
-  local lines, marks = M.lines(chat, row, rows, width)
+--- Fill `buf` with the summary of `chat`, for a pane `width` cells wide
+--- in tab `tab`.
+function M.render(buf, chat, row, rows, width, tab)
+  local lines, marks = M.lines(chat, row, rows, width, tab)
   M.show(buf, lines, marks)
 end
 

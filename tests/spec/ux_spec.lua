@@ -73,9 +73,13 @@ local function bar(win)
   return (raw:gsub('%%#%w+#', ''):gsub('%%%*', ''):gsub('%%=', ' | '))
 end
 
-local function pane_title()
-  local raw = vim.wo[board()._state.pane_win].winbar
-  return (raw:gsub('%%#%w+#', ''):gsub('%%%*', ''):gsub('%%=', ' | '))
+-- The right of the bar on a list of ordinary width: the keys that are there
+-- on every row.
+local ALWAYS = ' | + New Chat  S Search  R Refresh  ? Menu '
+
+--- What the pane has for a bar of its own: nothing, whatever it shows.
+local function pane_bar()
+  return vim.wo[board()._state.pane_win].winbar
 end
 
 local function key(c)
@@ -160,11 +164,11 @@ after_each(function()
 end)
 
 describe('keys: yours are left alone', function()
-  it('takes no lowercase letter, and neither H nor L, anywhere', function()
+  it('takes no lowercase letter but q, and neither H nor L, anywhere', function()
     local home, c = open(function(h)
       return chat(h)
     end)
-    local theirs = vim.split('H L G N R F Q P M n b e w j k h l a d f i o p r s t u v x y', ' ')
+    local theirs = vim.split('H L G N F Q P M n b e w j k h l a d f i o p r s t u v x y', ' ')
     local function untouched(where)
       for _, lhs in ipairs(theirs) do
         eq('', vim.fn.maparg(lhs, 'n'), ('%s is mapped %s'):format(lhs, where))
@@ -216,9 +220,9 @@ describe('keys: yours are left alone', function()
     eq('g?', keys().key('menu'))
     eq(nil, keys().key('read'))
     -- What the screen says follows: no hint for a key that is not bound.
-    hasnt(bar(), 'conversation')
-    has(bar(), 'g? menu')
-    has(list(), '/ search')
+    hasnt(bar(), 'Conversation')
+    has(bar(), 'g? Menu')
+    has(bar(), '/ Search')
     -- And it is said which keys were left, and to what.
     local left = {}
     for _, l in ipairs(keys().left()) do
@@ -301,7 +305,7 @@ describe('keys: yours are left alone', function()
     eq(1, pressed)
     eq(board()._state.win, api.nvim_get_current_win(), 'no conversation was opened')
     eq(nil, keys().key('read'))
-    hasnt(bar(), 'conversation')
+    hasnt(bar(), 'Conversation')
     ok(store().get(key(c)))
   end)
 
@@ -332,8 +336,8 @@ describe('keys: yours are left alone', function()
     eq(buf, api.nvim_get_current_buf(), 'still in the conversation')
     -- The title names what is bound here: the second keys for the prompts,
     -- and, with no key to go back, the command that does.
-    has(pane_title(), 'J K prompts')
-    has(pane_title(), ':q back')
+    has(bar(), 'J K Prompts')
+    has(bar(), ':q Back')
     -- J goes to the next prompt.
     api.nvim_win_set_cursor(0, { 1, 0 })
     feed('J')
@@ -349,7 +353,7 @@ describe('keys: yours are left alone', function()
     no(vim.fn.maparg('q', 'n', false, true).buffer == 1)
     eq(term, api.nvim_get_current_buf())
     -- No key at all: closing the window is the way back, and it says so.
-    has(pane_title(), ':q back')
+    has(bar(), ':q Back')
   end)
 
   it('says so when two actions are given one key, and which of them it does', function()
@@ -369,14 +373,47 @@ describe('keys: yours are left alone', function()
       vim.wait(30)
     end)
     has(said, 'keys.transcript is now keys.read')
-    has(said, 'keys.handoff is now keys.pass')
+    has(said, 'keys.handoff is gone: passing a chat on to another agent was taken out')
     has(said, 'keys.yank_id is gone')
     has(said, 'keys.nonsense is not an action')
     local cfg = require('agent-chats.config').get()
     eq('gt', cfg.keys.read)
-    eq('gp', cfg.keys.pass)
+    eq(nil, cfg.keys.pass)
+    eq(nil, cfg.keys.handoff)
     eq(nil, cfg.keys.transcript)
     eq(nil, cfg.keys.nonsense)
+  end)
+
+  it('has no way from one chat that needs you to the next, and says so to a key for it', function()
+    local said = notes(function()
+      open(function(h)
+        chat(h, { title = 'Unread one', age = 30 })
+      end, { keys = { next_attention = '<F7>', prev_attention = '<F8>' } })
+      vim.wait(30)
+    end)
+    has(
+      said,
+      'keys.next_attention is gone: going from one chat that needs you to the next was taken out'
+    )
+    has(said, 'keys.prev_attention is gone')
+    local cfg = require('agent-chats.config').get()
+    eq(nil, cfg.keys.next_attention)
+    eq(nil, cfg.keys.prev_attention)
+    eq('', vim.fn.maparg('<F7>', 'n'))
+    eq(nil, board().jump_attention)
+    eq(nil, board().descriptions.next_attention)
+    -- Nor a line for it in the menu, with a chat that is unread.
+    state().update(function(s)
+      s.baseline = os.time() - 3000
+      s.seen = {}
+    end)
+    store().touch()
+    ok(store().counts().done > 0)
+    board().menu()
+    local lines = table.concat(menu().lines(), '\n')
+    has(lines, 'Mark every chat read')
+    hasnt(lines, 'needs you')
+    menu().close()
   end)
 
   it('describes every mapping it makes', function()
@@ -413,33 +450,37 @@ describe('the bar above the list', function()
     end
 
     -- An ended chat: Enter resumes it, and what is said to it is typed there.
-    eq(' Enter resume  C conversation | ? menu ', on(key(c)))
-    -- One whose folder is gone can only be read: the bar says why.
-    eq(' Enter read   (its folder is gone) | ? menu ', on(key(made.gone)))
+    -- (At the right, the keys that are there on every row.)
+    local always = ' | + New Chat  S Search  R Refresh  ? Menu '
+    eq(' Enter Resume  C Conversation' .. always, on(key(c)))
+    -- One whose folder is gone can only be read. (The key for the
+    -- conversation is named all the same: it is where it is on every chat.
+    -- Why Enter only reads it is said where there is room: see below.)
+    eq(' Enter Read  C Conversation' .. always, on(key(made.gone)))
     -- So can one that runs outside this Neovim.
-    eq(' Enter read   (it runs outside this Neovim) | ? menu ', on(key(made.away)))
+    eq(' Enter Read  C Conversation' .. always, on(key(made.away)))
 
     -- In a terminal of this Neovim: Enter goes to it.
     local _, term = hosted(home, c)
     board().focus()
-    eq(' Enter open  C conversation | ? menu ', on(key(c)))
+    eq(' Enter Open  C Conversation' .. ALWAYS, on(key(c)))
     local pid = store().get(key(c)).pid
     -- Busy: the same two. (A reply can be queued for it from the menu.)
     home:registry(pid, { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() })
     store().refresh_sync({ full = false })
-    eq(' Enter open  C conversation | ? menu ', on(key(c)))
+    eq(' Enter Open  C Conversation' .. ALWAYS, on(key(c)))
     -- Asking: Enter goes to answer it.
     home:registry(
       pid,
       { sessionId = c.id, status = 'waiting', waitingFor = 'permission', cwd = vim.uv.cwd() }
     )
     store().refresh_sync({ full = false })
-    eq(' Enter answer it  C conversation | ? menu ', on(key(c)))
+    eq(' Enter Answer  C Conversation' .. ALWAYS, on(key(c)))
     -- With something queued, its row says so; the bar names no key for
     -- what has none.
     state().enqueue(key(c), 'then the docs')
     board().render()
-    eq(' Enter answer it  C conversation | ? menu ', bar())
+    eq(' Enter Answer  C Conversation' .. ALWAYS, bar())
     has(list(), '»1')
     ok(api.nvim_buf_is_valid(term))
 
@@ -452,7 +493,7 @@ describe('the bar above the list', function()
       end
     end
     board().focus()
-    eq(' Enter read | ? menu ', bar())
+    eq(' Enter Read' .. ALWAYS, bar())
 
     -- A heading folds; the top of the list is about the board itself.
     for i, row in ipairs(board()._state.rows) do
@@ -462,33 +503,39 @@ describe('the bar above the list', function()
       end
     end
     board().focus()
-    eq(' Enter fold | ? menu ', bar())
+    eq(' Enter Fold' .. ALWAYS, bar())
     board().toggle_row()
-    eq(' Enter unfold | ? menu ', bar())
+    eq(' Enter Unfold' .. ALWAYS, bar())
     board().toggle_row()
     api.nvim_win_set_cursor(board()._state.win, { 1, 0 })
     board().focus()
-    eq(' + new chat  S search | ? menu ', bar())
+    -- (On no row: what can be done with the list is all there is to name.)
+    eq(' ' .. ALWAYS, bar())
   end)
 
   it('names the keys you give to what has none by default', function()
     local home, c = open(function(h)
       return chat(h, { title = 'Hosted here', age = 30 })
-    end, { keys = { queue = 'Q', pass = 'P' } })
+    end, { keys = { queue = 'Q' } })
     hosted(home, c)
     board().focus()
     board().goto_chat(key(c))
-    eq(' Enter open  C conversation  P pass to agent | ? menu ', bar())
+    -- (Nothing to queue behind: the chat is not in the middle of a turn.)
+    eq(' Enter Open  C Conversation' .. ALWAYS, bar())
     home:registry(
       store().get(key(c)).pid,
       { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() }
     )
     store().refresh_sync({ full = false })
     board().render()
-    has(bar(), 'Enter open  Q queue a reply  C conversation')
+    -- (Beside the keys that are always there, the row has room for two.)
+    has(bar(), 'Enter Open  Q Queue a Reply | + New Chat')
+    api.nvim_win_set_width(board()._state.win, 100)
+    board().render()
+    has(bar(), 'Enter Open  Q Queue a Reply  C Conversation | + New Chat')
     state().enqueue(key(c), 'then the docs')
     board().render()
-    has(bar(), 'Q queued replies (1)')
+    has(bar(), 'Q Queued Replies (1)')
   end)
 
   it('drops hints from the right when narrow, and never the way to the rest', function()
@@ -501,12 +548,19 @@ describe('the bar above the list', function()
       board().render()
       return bar()
     end
-    eq(' Enter resume  C conversation | ? menu ', at(76))
-    eq(' Enter resume  C conversation | ? menu ', at(40))
-    eq(' Enter resume | ? menu ', at(30))
-    eq(' Enter resume | ? menu ', at(24))
+    -- The key that is needed least goes first, and a long label is
+    -- shortened; then the conversation gives way to a new chat and the
+    -- search; then those go, and last what Enter does.
+    eq(' Enter Resume  C Conversation | + New Chat  S Search  R Refresh  ? Menu ', at(76))
+    eq(' Enter Resume  C Conversation | + New Chat  S Search  ? Menu ', at(64))
+    eq(' Enter Resume  C Conversation | + New  S Search  ? Menu ', at(56))
+    eq(' Enter Resume | + New  S Search  ? Menu ', at(48))
+    eq(' Enter Resume | + New  S Search  ? Menu ', at(39))
+    eq(' Enter Resume | + New  ? Menu ', at(30))
+    eq(' Enter Resume | ? Menu ', at(24))
+    eq('  | ? Menu ', at(12))
     -- What is shown fits.
-    for _, width in ipairs({ 76, 40, 30, 24 }) do
+    for _, width in ipairs({ 76, 64, 56, 48, 39, 30, 24, 12 }) do
       local shown = at(width):gsub(' | ', '  ')
       ok(vim.fn.strdisplaywidth(shown) <= width, ('%d: %s'):format(width, shown))
     end
@@ -516,7 +570,7 @@ describe('the bar above the list', function()
     open(function(h)
       chat(h)
     end, { keys = { menu = false } })
-    has(bar(), '| :Chats menu ')
+    has(bar(), 'R Refresh  :Chats menu ')
     vim.cmd('runtime plugin/agent-chats.lua')
     vim.cmd('Chats menu')
     ok(menu().is_open())
@@ -529,15 +583,17 @@ describe('the bar above the list', function()
     end)
     vim.cmd('split')
     local second = api.nvim_get_current_win()
+    -- (The chat that cannot be resumed is under a heading of its own, at
+    -- the end, folded.)
     for i, row in ipairs(board()._state.rows) do
-      if row.chat and row.chat.title == 'Folder gone' then
+      if row.kind == 'group' and row.gone then
         api.nvim_win_set_cursor(second, { i, 1 })
       end
     end
     board().focus()
     board().render()
-    has(bar(board()._state.win), 'Enter resume')
-    has(bar(second), 'Enter read')
+    has(bar(board()._state.win), 'Enter Resume')
+    has(bar(second), 'Enter Unfold')
     api.nvim_win_close(second, true)
   end)
 end)
@@ -585,8 +641,8 @@ describe('the menu', function()
 
   it('is one list, all of it in view, in parts under headings', function()
     open(function(h)
-      chat(h, { cwd = '/work/alpha' })
-      chat(h, { cwd = '/work/beta', age = 700 })
+      chat(h, { cwd = T.folder('alpha') })
+      chat(h, { cwd = T.folder('beta'), age = 700 })
     end)
     feed('?')
     local lines = menu().lines()
@@ -643,7 +699,7 @@ describe('the menu', function()
     feed('?')
     ok(menu().pick('Group by folder'))
     no(menu().is_open())
-    has(list(), '/work/alpha  1')
+    has(list(), '/alpha  1')
     has(list(), 'by folder')
 
     feed('?')
@@ -726,8 +782,6 @@ describe('the menu', function()
     -- What is said to it is typed there: the menu offers no reply.
     hasnt(idle, 'Reply')
     hasnt(idle, 'Queue')
-    -- Nor passing it on, which is off until it is given a key.
-    hasnt(idle, 'Pass')
 
     local pid = store().get(key(c)).pid
     home:registry(pid, { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() })
@@ -877,9 +931,9 @@ describe('one search', function()
     has(list(), 'Search “zebra”  1 chat · 1 passage')
     has(list(), 'zebra crossing')
     eq(key(deep), board()._state.rows[4].chat.key)
-    -- The header says how to end it and how to change it.
-    has(list(), 'q ends the search')
-    has(list(), 'S changes it')
+    -- The bar says how to end it and how to change it.
+    has(bar(), 'q End Search')
+    has(bar(), 'S New Search')
     -- Enter on the passage opens the conversation there.
     for i, row in ipairs(board()._state.rows) do
       if row.kind == 'hit' then
@@ -887,7 +941,7 @@ describe('one search', function()
       end
     end
     board().focus()
-    has(bar(), 'Enter read this passage')
+    has(bar(), 'Enter Read This Passage')
     feed('<CR>')
     local buf = api.nvim_get_current_buf()
     eq('agent-chats-conversation', vim.bo[buf].filetype)
@@ -916,7 +970,7 @@ describe('one search', function()
     local row = board().row()
     eq('chat', row.kind, 'not the heading above it')
     eq('Write the docs', row.chat.title)
-    has(bar(), 'Enter resume')
+    has(bar(), 'Enter Resume')
     -- Changing the search starts from its first result again.
     feed('jS<C-u>parser<CR>')
     eq('Fix the parser', board().row().chat.title)
@@ -1057,20 +1111,23 @@ describe('going back', function()
     local _, term = hosted(home, c)
     local S = board()._state
     eq(term, api.nvim_get_current_buf())
-    has(pane_title(), 'LIVE  Claude · Fix the parser')
-    -- The title names the key that goes back in the mode the terminal is
-    -- in: one while typing, another in its normal mode.
-    has(pane_title(), 'q back')
-    hasnt(pane_title(), [[<C-\><C-b>]])
+    -- The pane has no bar of its own: the chat has every line of it. Which
+    -- chat it is, the list says, on the row that is marked.
+    eq('', pane_bar())
+    -- The bar above the list names the key that goes back in the mode the
+    -- terminal is in: one while typing, another in its normal mode. They
+    -- are the only keys there are in a chat, and all it names.
+    eq(' q Back |  ', bar())
+    hasnt(bar(), [[<C-\><C-b>]])
     T.typing(function()
-      has(pane_title(), [[<C-\><C-b> back]])
-      hasnt(pane_title(), 'q back')
+      has(bar(), [[<C-\><C-b> Back]])
+      hasnt(bar(), 'q Back')
     end)
-    has(pane_title(), 'q back')
+    has(bar(), 'q Back')
     -- In the terminal's normal mode, q.
     feed('q')
     eq(S.win, api.nvim_get_current_win())
-    hasnt(pane_title(), 'back')
+    hasnt(bar(), 'Back')
     -- While typing, the terminal's own key.
     actions().open(store().get(key(c)))
     eq(term, api.nvim_get_current_buf())
@@ -1095,16 +1152,16 @@ describe('going back', function()
     hosted(home, c)
     local S = board()._state
     board().focus()
-    hasnt(pane_title(), 'back')
+    hasnt(bar(), 'Back')
     vim.cmd('wincmd l')
     eq(S.pane_win, api.nvim_get_current_win())
-    has(pane_title(), 'q back')
+    has(bar(), 'q Back')
     T.typing(function()
-      has(pane_title(), [[<C-\><C-b> back]])
+      has(bar(), [[<C-\><C-b> Back]])
     end)
     vim.cmd('wincmd h')
     vim.wait(30)
-    hasnt(pane_title(), 'back')
+    hasnt(bar(), 'Back')
   end)
 end)
 
@@ -1154,7 +1211,7 @@ describe('the summary', function()
   end)
 
   it('says first what state the chat is in, then where it is', function()
-    local home, made = open(function(h)
+    local _, made = open(function(h)
       local here = chat(h, { title = 'Folder is here' })
       local gone = chat(h, { title = 'Folder is gone', cwd = '/nonexistent/for/tests', age = 700 })
       local away = chat(h, { title = 'Runs elsewhere', age = 800 })
@@ -1180,15 +1237,12 @@ describe('the summary', function()
     -- Its folder gone: said twice, where it matters.
     local gone = table.concat(lines_of(key(made.gone)), '\n')
     has(gone, 'Its folder is gone, so it cannot be resumed. Enter reads it.')
-    -- (Passing it on is off, so nothing is said of it.)
-    hasnt(gone, 'passes it on')
     has(gone, 'Folder  /nonexistent/for/tests · main · gone')
     -- Waiting for you, in a terminal that is not ours.
     local away = lines_of(key(made.away))
     eq('● Needs you: permission to use Bash', away[3])
     has(table.concat(away, '\n'), 'It runs outside this Neovim')
     has(table.concat(away, '\n'), "Status  known from the agent's own list of running sessions")
-    ok(home)
   end)
 
   it('says when queued replies go, and when they will not', function()
@@ -1222,22 +1276,22 @@ describe('the first opening', function()
       local b = chat(h, { title = 'Chat B', age = 20 })
       return { a = a, b = b }
     end, { board = { intro = true } })
-    has(pane_title(), 'Welcome')
+    eq('', pane_bar())
     local intro = pane()
     has(intro, '# Agent chats')
-    has(intro, 'Enter  go into a chat and type')
-    has(intro, 'C      read the whole conversation')
-    has(intro, '+      new chat: pick the agent, and it opens')
-    has(intro, 'S      search every chat')
-    has(intro, 'q      back')
+    has(intro, 'Enter  Open: go into a chat and type')
+    has(intro, 'C      Conversation: read the whole of it')
+    has(intro, '+      New Chat: pick the agent, and it opens')
+    has(intro, 'S      Search: every chat')
+    has(intro, 'q      Back')
+    has(intro, 'R      Refresh: look for changes now')
     -- A reply is typed in the chat: no key of the list is for it. Nor is
     -- there one for what is done now and then: that is in the menu.
-    hasnt(intro, 'R      ')
+    hasnt(intro, 'Reply')
     hasnt(intro, 'fork')
-    hasnt(intro, 'queue a reply')
-    hasnt(intro, 'pass a chat')
-    hasnt(intro, 'notifications on or off')
-    has(intro, '?      the menu: everything else')
+    hasnt(intro, 'Queue a Reply')
+    hasnt(intro, 'Notifications: on or off')
+    has(intro, '?      Menu: everything else')
     -- q is the one lowercase key the board has: said, not contradicted.
     has(intro, 'Capital letters act; apart from q, lowercase keys stay what they are.')
     -- The key that is pressed while typing to an agent, where no bar is.
@@ -1261,14 +1315,16 @@ describe('the first opening', function()
   end)
 
   it('names only the keys that are bound, and can be switched off', function()
-    user_map('n', 'R', '<cmd>echo<cr>')
+    -- One key is a mapping of yours, one action has been given no key.
+    user_map('n', 'S', '<cmd>echo<cr>')
     open(function(h)
       chat(h)
-    end, { board = { intro = true }, keys = { fork = false, read = 'v' } })
+    end, { board = { intro = true }, keys = { new = false, read = 'v' } })
     local intro = pane()
-    hasnt(intro, 'R      reply')
-    hasnt(intro, 'fork')
-    has(intro, 'v      read the whole conversation')
+    hasnt(intro, 'S      Search')
+    has(intro, '/      Search: every chat')
+    hasnt(intro, 'New Chat: pick the agent')
+    has(intro, 'v      Conversation: read the whole of it')
     hasnt(intro, 'Capital letters act', 'not true of these keys')
     board().close()
 
@@ -1351,6 +1407,8 @@ describe("a chat's terminal", function()
       store().refresh_sync({ full = false })
       return store().get(key(c)).term == buf
     end)
+    -- Out of sight, as a terminal that was toggled away is.
+    vim.cmd('enew')
     board().open()
     board().goto_chat(key(c))
     board().render()
@@ -1378,7 +1436,7 @@ describe("a chat's terminal", function()
     eq(term, api.nvim_get_current_buf())
     eq(1, vim.fn.maparg('<C-g>', 't', false, true).buffer)
     T.typing(function()
-      has(pane_title(), '<C-g> back')
+      has(bar(), '<C-g> Back')
     end)
     no(vim.fn.maparg([[<C-\><C-b>]], 't', false, true).buffer == 1)
   end)
@@ -1562,99 +1620,44 @@ describe('a new chat', function()
   )
 end)
 
-describe('passing a chat on', function()
-  it('is off until it is given a key', function()
-    local _, c = open(function(h)
-      return chat(h, { title = 'Fix the parser' })
-    end)
-    eq(nil, keys().key('pass'))
-    no(vim.fn.maparg('P', 'n', false, true).buffer == 1)
-    hasnt(bar(), 'pass')
-    feed('?')
-    hasnt(table.concat(menu().lines(), '\n'), 'Pass')
-    menu().close()
-    actions().read(store().get(key(c)))
-    feed('?')
-    hasnt(table.concat(menu().lines(), '\n'), 'Pass')
-    menu().close()
-    board().close()
+describe('a menu taller than the screen', function()
+  local function footer()
+    local f = api.nvim_win_get_config(0).footer
+    return f and f[1][1] or ''
+  end
 
-    -- With a key, it is on the bar, in the menu, and in the summary of a
-    -- chat that can be taken up no other way.
-    local _, made = open(function(h)
-      chat(h, { title = 'Fix the parser' })
-      return chat(h, { title = 'Folder is gone', cwd = '/nonexistent/for/tests', age = 700 })
-    end, { keys = { pass = 'P' } })
-    has(bar(), 'P pass to agent')
-    feed('?')
-    has(table.concat(menu().lines(), '\n'), 'P      Pass to another agent, with notes')
-    menu().close()
-    board().goto_chat(key(made))
-    -- (Fitted to the pane: a sentence can go on, indented, on the next line.)
-    has(pane():gsub('\n%s*', ' '), 'P passes it on to a new chat in another folder.')
-  end)
-
-  it('starts the new chat in the same folder, with notes you can edit', function()
-    local home, c = open(function(h)
-      return chat(h, { title = 'Fix the parser' })
-    end, { keys = { pass = 'P' } })
-    local agent = fake.install(home)
-    local restore = answer({ 1 })
-    feed('P')
-    restore()
-    local input = require('agent-chats.ui.input')
-    T.wait(2000, function()
-      return input.is_open()
+  it('says in its footer that there is more of it, and which way', function()
+    open(function(h)
+      chat(h)
     end)
-    local title = api.nvim_win_get_config(0).title[1][1]
-    has(title, 'Notes for Claude in ' .. vim.fn.fnamemodify(vim.uv.cwd(), ':~'))
-    has(T.buf_text(api.nvim_get_current_buf()), 'taking over a task from another coding agent')
-    input.submit()
-    T.wait(3000, function()
-      local log = agent.read()
-      return log:find('taking over a task', 1, true) ~= nil and log:find('cwd: ', 1, true) ~= nil
-    end)
-    has(agent.read(), 'cwd: ' .. vim.uv.cwd())
-    ok(store().get(key(c)))
-    -- Its terminal goes by the first line of the notes, as its row does:
-    -- not by the page that follows it.
-    has(pane_title(), 'LIVE  Claude · Taking over “Fix the par')
-    hasnt(pane_title(), 'You are taking')
-    has(
-      api.nvim_buf_get_name(0),
-      'Agent chat: Taking over “Fix the parser” from Claude. · Claude'
-    )
-    hasnt(api.nvim_buf_get_name(0), 'You are taking')
-  end)
-
-  it('asks for a folder when the chat has lost its own', function()
-    local home, c = open(function(h)
-      return chat(h, { title = 'Its folder is gone', cwd = '/nonexistent/for/tests' })
-    end)
-    local agent = fake.install(home)
-    local asked
-    local real_select = vim.ui.select
-    local n = 0
-    vim.ui.select = function(items, opts, cb)
-      n = n + 1
-      if n == 1 then
-        return cb(items[1]) -- the agent
-      end
-      asked = opts.prompt
-      cb(items[1]) -- the first folder offered: the current one
+    local items = {}
+    for i = 1, 80 do
+      items[i] = { text = ('Choice %d'):format(i), run = function() end }
     end
-    actions().pass(store().get(key(c)))
-    local input = require('agent-chats.ui.input')
-    T.wait(2000, function()
-      return input.is_open()
-    end)
-    vim.ui.select = real_select
-    has(asked, 'The folder of this chat is gone. Where should Claude work?')
-    input.submit()
-    T.wait(3000, function()
-      return agent.read():find('cwd: ', 1, true) ~= nil
-    end)
-    has(agent.read(), 'cwd: ' .. vim.uv.cwd())
+    local win = menu().open(items, { title = 'Many' })
+    ok(api.nvim_win_get_height(win) < 80, 'not all of it fits')
+    eq(' ↓ More · Enter Choose · q Close ', footer())
+    feed('G')
+    vim.wait(30)
+    eq(' ↑ More · Enter Choose · q Close ', footer())
+    -- Half way back up: the window scrolls to it, and both ends are out of sight.
+    api.nvim_win_set_cursor(win, { 20, 2 })
+    api.nvim_exec_autocmds('CursorMoved', { buffer = api.nvim_win_get_buf(win) })
+    vim.wait(30)
+    eq(' ↑↓ More · Enter Choose · q Close ', footer())
+    feed('gg')
+    vim.wait(30)
+    eq(' ↓ More · Enter Choose · q Close ', footer())
+    menu().close()
+    -- All of it in view: only its keys.
+    menu().open({ { text = 'One', run = function() end } }, { title = 'Few' })
+    eq(' Enter Choose · q Close ', footer())
+  end)
+
+  it('keeps that there is more when there is room for little else', function()
+    eq(' ↓ More ', menu().footer('↓', 20))
+    eq(' ↑↓ More · Enter Choose · q Close ', menu().footer('↑↓', 40))
+    eq(' Enter Choose · q Close ', menu().footer(nil, 10))
   end)
 end)
 
@@ -1712,7 +1715,7 @@ describe('with the mouse, or in a borrowed window', function()
     local win = api.nvim_get_current_win()
     vim.wo[win].winbar = 'my own bar'
     board().open()
-    has(vim.wo[win].winbar, 'menu')
+    has(vim.wo[win].winbar, 'Menu')
     board().close()
     eq('my own bar', vim.wo[win].winbar)
     vim.wo[win].winbar = ''
@@ -1746,21 +1749,6 @@ local function settled_mode(then_type)
   return seen
 end
 
---- Type `text` as a person does, starting in normal mode; `text` has to
---- leave insert mode itself (by sending or handing on the box it is typed
---- in). A key that fails to would leave Neovim waiting for ever, so a
---- timer presses Esc after a while.
-local function type_in(text)
-  local stuck = vim.defer_fn(function()
-    api.nvim_feedkeys(tc('<Esc>'), 'n', false)
-  end, 3000)
-  api.nvim_feedkeys(tc(text), 'x!', false)
-  stuck:stop()
-  if not stuck:is_closing() then
-    stuck:close()
-  end
-end
-
 describe('typing, where it is expected', function()
   it('is on in a new chat as soon as its agent is picked', function()
     local home = open()
@@ -1776,7 +1764,7 @@ describe('typing, where it is expected', function()
     end)
   end)
 
-  it('opens a reply that was kept ready to go on, and notes ready to be read', function()
+  it('opens a reply that was kept ready to go on', function()
     local home, c = open(function(h)
       return chat(h)
     end)
@@ -1790,16 +1778,6 @@ describe('typing, where it is expected', function()
     eq('i', settled_mode(' this'))
     eq('first line\nand then this', T.buf_text(api.nvim_get_current_buf()))
     input.cancel()
-    -- Notes for another agent are there to be read first: the top, normal mode.
-    board().focus()
-    local restore = answer({ 1 })
-    actions().pass(store().get(key(c)))
-    T.wait(2000, function()
-      return input.is_open()
-    end)
-    restore()
-    eq({ 1, 0 }, api.nvim_win_get_cursor(0))
-    eq('n', settled_mode())
   end)
 end)
 
@@ -1849,7 +1827,7 @@ describe('keys: what changes while the board is open', function()
       chat(h)
     end)
     eq(1, vim.fn.maparg('C', 'n', false, true).buffer)
-    has(bar(), 'C conversation')
+    has(bar(), 'C Conversation')
     -- A plugin loads late and maps C.
     local pressed = 0
     user_map('n', 'C', function()
@@ -1859,7 +1837,7 @@ describe('keys: what changes while the board is open', function()
     vim.cmd('wincmd h')
     vim.wait(30)
     no(vim.fn.maparg('C', 'n', false, true).buffer == 1)
-    hasnt(bar(), 'C conversation')
+    hasnt(bar(), 'C Conversation')
     feed('C')
     eq(1, pressed)
     eq(board()._state.win, api.nvim_get_current_win(), 'no conversation was opened')
@@ -1867,7 +1845,7 @@ describe('keys: what changes while the board is open', function()
     vim.keymap.del('n', 'C')
     board().focus()
     eq(1, vim.fn.maparg('C', 'n', false, true).buffer)
-    has(bar(), 'C conversation')
+    has(bar(), 'C Conversation')
   end)
 
   it('takes its keys from the options again when setup() is called with it open', function()
@@ -1879,8 +1857,8 @@ describe('keys: what changes while the board is open', function()
     require('agent-chats.config').setup(opts)
     eq(1, vim.fn.maparg('x', 'n', false, true).buffer)
     no(vim.fn.maparg('C', 'n', false, true).buffer == 1)
-    has(bar(), 'x conversation')
-    hasnt(bar(), 'C conversation')
+    has(bar(), 'x Conversation')
+    hasnt(bar(), 'C Conversation')
   end)
 
   it('leaves a mapping of yours alone whatever its description says', function()
@@ -1905,7 +1883,7 @@ describe('keys: one key, one action', function()
     has(said, 'keys.archive is on C, which "read" has by default: "read" has no key now')
     has(vim.fn.maparg('C', 'n', false, true).desc, 'archive the chat')
     eq(nil, keys().key('read'))
-    hasnt(bar(), 'conversation')
+    hasnt(bar(), 'Conversation')
     -- The menu lists the action without a key: there is none that picks it.
     feed('?')
     local read
@@ -1940,10 +1918,10 @@ describe('keys: one key, one action', function()
     local said = notes(function()
       open(function(h)
         chat(h)
-      end, { keys = { handoff = 'x', pass = 'y' } })
+      end, { keys = { transcript = 'x', read = 'y' } })
     end)
-    has(said, 'keys.handoff is now keys.pass, which is set as well: keys.handoff is ignored')
-    eq('y', keys().key('pass'))
+    has(said, 'keys.transcript is now keys.read, which is set as well: keys.transcript is ignored')
+    eq('y', keys().key('read'))
   end)
 end)
 
@@ -1966,6 +1944,7 @@ describe('options that are not what they should be', function()
       -- A key for something that was taken out: said, and nothing else.
       { { keys = { reply = 'R' } }, 'keys.reply is gone: Enter goes into the chat' },
       { { keys = { fork = 'F' } }, 'keys.fork is gone' },
+      { { keys = { pass = 'P' } }, 'keys.pass is gone: passing a chat on' },
     }
     for _, case in ipairs(cases) do
       local said = notes(function()
@@ -1991,7 +1970,7 @@ describe('options that are not what they should be', function()
     eq(nil, keys().key('new'))
     eq(nil, keys().key('read'))
     -- The rest is as it was, and nothing is out of reach: the menu lists both.
-    has(bar(), 'Enter resume')
+    has(bar(), 'Enter Resume')
     feed('?')
     local shown = table.concat(menu().lines(), '\n')
     has(shown, 'New chat')
@@ -2006,7 +1985,7 @@ describe('options that are not what they should be', function()
       end, { keys = { read = long } })
     end)
     hasnt(bar(), long)
-    hasnt(bar(), 'conversation')
+    hasnt(bar(), 'Conversation')
   end)
 end)
 
@@ -2034,9 +2013,9 @@ describe("a chat's terminal: the way back, again", function()
     })
     hosted(home, c)
     -- Closing the window still goes back, and that is what it says.
-    has(pane_title(), '| :q back')
+    has(bar(), ' :q Back |')
     T.typing(function()
-      has(pane_title(), [[<C-\><C-n> then :q back]])
+      has(bar(), [[<C-\><C-n> then :q Back]])
     end)
   end)
 
@@ -2057,27 +2036,25 @@ describe("a chat's terminal: the way back, again", function()
       },
     })
     hosted(home, c)
-    has(pane_title(), '| q back')
+    has(bar(), ' q Back |')
     T.typing(function()
-      has(pane_title(), '| <C-x> back')
+      has(bar(), ' <C-x> Back |')
     end)
     feed('q')
     eq(board()._state.win, api.nvim_get_current_win())
   end)
 
-  it('leaves room between the name and the key, however narrow', function()
+  it('names it on the bar above the list, however narrow that is', function()
     local home, c = open(function(h)
       return chat(h, { title = 'A chat with a name that goes on for quite a while' })
     end)
     hosted(home, c)
     local S = board()._state
-    for _, width in ipairs({ 60, 44, 30 }) do
-      api.nvim_win_set_width(S.pane_win, width)
+    for _, width in ipairs({ 60, 44, 30, 12 }) do
+      api.nvim_win_set_width(S.win, width)
       board().pane_entered(api.nvim_win_get_buf(S.pane_win))
-      local title = pane_title()
-      has(title, ' | q back ')
-      local shown = title:gsub(' | ', '  ')
-      ok(vim.fn.strdisplaywidth(shown) <= width, ('%d: %s'):format(width, shown))
+      has(bar(), ' q Back ')
+      eq('', pane_bar())
     end
   end)
 end)
@@ -2170,7 +2147,6 @@ describe('the menu: its own keys, and where it is opened from', function()
     feed('?')
     local shown = table.concat(menu().lines(), '\n')
     has(shown, 'Back to the list (q)')
-    hasnt(shown, 'Pass to another agent')
     hasnt(shown, 'Reply')
     hasnt(shown, 'Fork')
     has(shown, '+    New chat')
@@ -2193,25 +2169,6 @@ describe('the menu: its own keys, and where it is opened from', function()
     feed('+')
     restore()
     no(menu().is_open())
-  end)
-
-  it('passes a chat on from its conversation, where passing on has a key', function()
-    local _, c = open(function(h)
-      return chat(h)
-    end, { keys = { pass = 'P' } })
-    actions().read(store().get(key(c)))
-    feed('?')
-    has(table.concat(menu().lines(), '\n'), 'P    Pass to another agent, with notes')
-    menu().close()
-    local asked
-    local real = vim.ui.select
-    vim.ui.select = function(_, o, cb)
-      asked = o.prompt
-      cb(nil)
-    end
-    feed('P')
-    vim.ui.select = real
-    eq('Pass this chat to', asked)
   end)
 end)
 
@@ -2320,7 +2277,7 @@ describe('a chat started from the board', function()
     restore()
     eq('terminal', vim.bo.buftype)
     local term = api.nvim_get_current_buf()
-    has(pane_title(), 'LIVE  Claude · (no prompt yet) · ')
+    has(bar(), 'Back')
     local row
     T.wait(3000, function()
       store().refresh_sync({ full = false })
@@ -2341,12 +2298,12 @@ describe('a chat started from the board', function()
       chat(h, { title = 'An older chat' })
     end)
     fake.install(home)
-    -- (As a script starts one, or a chat that is passed on.)
+    -- (As a script starts one.)
     actions().new({ provider = 'claude', prompt = 'build the thing' })
     eq('terminal', vim.bo.buftype)
     local term = api.nvim_get_current_buf()
     -- Its terminal is called by the prompt from the first moment.
-    has(pane_title(), 'LIVE  Claude · build the thing · ')
+    has(api.nvim_buf_get_name(term), 'build the thing')
     local row
     T.wait(3000, function()
       store().refresh_sync({ full = false })
@@ -2460,11 +2417,11 @@ describe('queueing, again', function()
     no(input.is_open())
     has(said, 'is gone (/nonexistent/for/tests), so it cannot be resumed')
     actions().read(store().get(key(c)))
-    has(pane_title(), 'q back')
+    has(bar(), 'q Back')
   end)
 
   it('only offers to drop what is queued for a chat that runs somewhere else', function()
-    local home, c = open(function(h)
+    local _, c = open(function(h)
       local away = chat(h, { title = 'Runs elsewhere' })
       h:registry(vim.uv.os_getpid(), { sessionId = away.id, status = 'idle', cwd = vim.uv.cwd() })
       return away
@@ -2484,10 +2441,9 @@ describe('queueing, again', function()
     -- The summary says the same of it.
     has(pane(), 'Queued  1 reply, not sent: nothing can send it to this chat from here')
     has(pane(), '? (the menu) drops it.')
-    ok(home)
   end)
 
-  it('says in the title of the box what Q will do with what is written', function()
+  it('says in the title of the box whether the reply goes now or waits for the turn', function()
     local home, c = open(function(h)
       return chat(h)
     end)
@@ -2515,22 +2471,6 @@ describe('queueing, again', function()
   end)
 end)
 
-describe('passing a chat on, again', function()
-  it('names the folder the new chat works in when the old one is gone', function()
-    local _, c = open(function(h)
-      return chat(h, { title = 'Its folder is gone', cwd = '/nonexistent/for/tests' })
-    end)
-    local messages = require('agent-chats.providers.claude').messages(store().get(key(c)))
-    local notes_ = actions().notes_for(store().get(key(c)), messages, vim.uv.cwd())
-    has(notes_, 'Folder: ' .. vim.uv.cwd())
-    has(notes_, '(The other agent worked in /nonexistent/for/tests, which is no longer there.)')
-    hasnt(notes_, 'Folder: /nonexistent')
-    -- With its folder there, that is the one.
-    local same = actions().notes_for(store().get(key(c)), messages, '/nonexistent/for/tests')
-    has(same, 'Folder: /nonexistent/for/tests')
-  end)
-end)
-
 describe('one search, again', function()
   it('names the keys of the prompt while the text is being typed', function()
     open(function(h)
@@ -2542,18 +2482,19 @@ describe('one search, again', function()
       group = group,
       callback = function()
         vim.schedule(function() end)
-        during = list()
+        during = bar()
       end,
     })
     feed('Sparser<CR>')
     -- While it was typed: Enter and Esc, which are what count at a prompt.
-    has(during, 'Enter keeps it')
-    has(during, 'Esc calls it off')
-    hasnt(during, 'ends the search')
+    has(during, 'Enter Keep Search')
+    has(during, 'Esc Cancel')
+    hasnt(during, 'End Search')
+    hasnt(during, 'Menu')
     -- Once it is kept: the board's own keys again.
-    has(list(), 'q ends the search')
-    has(list(), 'S changes it')
-    hasnt(list(), 'Enter keeps it')
+    has(bar(), 'q End Search')
+    has(bar(), 'S New Search')
+    hasnt(bar(), 'Enter Keep Search')
   end)
 
   it('marks in a row what was searched for, also when it is in the folder', function()
@@ -2590,23 +2531,29 @@ describe('one search, again', function()
     local function at(width)
       api.nvim_win_set_width(S.win, width)
       board().render()
-      return api.nvim_buf_get_lines(S.buf, 0, 1, false)[1]
+      return api.nvim_buf_get_lines(S.buf, 0, 1, false)[1], bar()
+    end
+    local function keys_at(width)
+      return (select(2, at(width)))
     end
     has(at(80), 'Search “parser”  1 chat · 2 passages')
-    has(at(80), 'q ends the search   S changes it')
+    has(keys_at(80), 'q End Search  S New Search  ? Menu')
     -- Narrower: words go before a key does.
-    has(at(66), 'Search “parser”  1 chat · 2 passages')
-    has(at(66), 'q ends it   S changes it')
-    hasnt(at(56), 'Search')
-    has(at(56), '“parser”  1 chat')
-    has(at(56), 'q ends it   S changes it')
+    has(keys_at(62), 'q End  S New Search  ? Menu')
+    has(at(44), 'Search “parser”  1 chat · 2 passages')
+    hasnt(at(30), 'Search “')
+    has(at(30), '“parser”  1 chat')
     -- Then the key that changes it, and last the one that ends it.
-    has(at(40), '“parser”  1 chat')
-    has(at(40), 'q ends it')
-    hasnt(at(40), 'S changes it')
-    hasnt(at(24), 'q ends')
-    for _, width in ipairs({ 80, 66, 56, 40, 24 }) do
-      ok(vim.fn.strdisplaywidth(at(width)) <= width, ('%d: %s'):format(width, at(width)))
+    has(keys_at(48), 'Enter Resume | q End  S New Search  ? Menu')
+    has(keys_at(36), 'q End  ? Menu')
+    hasnt(keys_at(36), 'S New Search')
+    hasnt(keys_at(24), 'q End')
+    has(keys_at(24), '? Menu')
+    for _, width in ipairs({ 80, 66, 56, 40, 36, 24 }) do
+      local line, keys_ = at(width)
+      ok(vim.fn.strdisplaywidth(line) <= width, ('%d: %s'):format(width, line))
+      local shown = keys_:gsub(' | ', '  ')
+      ok(vim.fn.strdisplaywidth(shown) <= width, ('%d: %s'):format(width, shown))
     end
   end)
 end)
@@ -2649,25 +2596,29 @@ describe('a conversation, again', function()
 end)
 
 describe(':checkhealth, again', function()
-  it('speaks of the keys as the open board has them, and of what has no menu line', function()
-    open(function(h)
-      chat(h)
-    end)
-    local S = board()._state
-    -- A mapping on the list's own buffer (a FileType autocommand of yours).
-    vim.keymap.set('n', 'C', function() end, { buffer = S.buf, desc = 'my C here' })
-    user_map('n', ']]', function() end)
-    user_map('n', 'J', function() end)
-    board().focus()
-    local health = {}
-    for _, line in ipairs(require('agent-chats.health').keys()) do
-      health[#health + 1] = line.text
+  it(
+    'speaks of the keys as the open board has them, and says where each action is instead',
+    function()
+      open(function(h)
+        chat(h)
+      end)
+      local S = board()._state
+      -- A mapping on the list's own buffer (a FileType autocommand of yours).
+      vim.keymap.set('n', 'C', function() end, { buffer = S.buf, desc = 'my C here' })
+      user_map('n', ']]', function() end)
+      user_map('n', 'J', function() end)
+      board().focus()
+      local health = {}
+      for _, line in ipairs(require('agent-chats.health').keys()) do
+        health[#health + 1] = line.text
+      end
+      local report = table.concat(health, '\n')
+      has(report, 'C is yours (my C here), so the board does not take it for "read"')
+      has(report, '"read": that is in the menu, and has no key')
+      -- What is done in a conversation is in the menu there, not the list's.
+      has(report, '"next_prompt": that is in the menu of a conversation, and has no key')
     end
-    local report = table.concat(health, '\n')
-    has(report, 'C is yours (my C here), so the board does not take it for "read"')
-    has(report, 'moving to the next prompt in a conversation has no key now')
-    hasnt(report, '"next_prompt": that is in the menu')
-  end)
+  )
 end)
 
 describe('every status heading', function()
@@ -2736,7 +2687,7 @@ describe('keys: a mapping of yours made while the cursor is on the list', functi
     -- What the screen says follows: the other key of the action is named.
     vim.wait(30)
     eq('/', keys().key('search'))
-    has(list(), '/ search')
+    has(bar(), '/ Search')
     feed('S')
     eq(2, pressed)
   end)
@@ -2827,16 +2778,19 @@ describe('the summary, when the cursor ends up in it', function()
       chat(h)
     end)
     local S = board()._state
-    hasnt(pane_title(), 'back')
+    hasnt(bar(), 'Back')
     -- A window command, a click or `:windo` can put the cursor there.
     vim.cmd('wincmd l')
     eq(S.pane_win, api.nvim_get_current_win())
-    eq(' Summary | q back ', pane_title())
+    -- The keys there are the list's, on the chat it shows; the one that
+    -- goes back is named with them.
+    eq(' Enter Resume  C Conversation  q Back' .. ALWAYS, bar())
+    eq('', pane_bar())
     feed('q')
     eq(S.win, api.nvim_get_current_win())
     ok(board().is_open(), 'back is one step: to the list, not out of the board')
     vim.wait(30)
-    eq(' Summary ', pane_title())
+    eq(' Enter Resume  C Conversation' .. ALWAYS, bar())
   end)
 
   it('leaves the key to you there too, and then names the command', function()
@@ -2846,7 +2800,9 @@ describe('the summary, when the cursor ends up in it', function()
     end)
     vim.cmd('wincmd l')
     no(vim.fn.maparg('q', 'n', false, true).buffer == 1)
-    eq(' Summary | :Chats goes back ', pane_title())
+    api.nvim_win_set_width(board()._state.win, 100)
+    board().summary_entered()
+    eq(' Enter Resume  C Conversation  :Chats Back' .. ALWAYS, bar())
   end)
 end)
 
@@ -2861,7 +2817,7 @@ describe('a chat started here has a row at once', function()
     -- An agent that is told its session's id and then neither writes a
     -- transcript nor puts itself on its list of running sessions.
     require('agent-chats.config').get().providers.claude.cmd = { 'sh', '-c', 'sleep 30' }
-    -- (Started with a prompt, as a chat that is passed on is.)
+    -- (Started with a prompt, as a script starts one.)
     actions().new({ provider = 'claude', prompt = 'build the thing' })
     local term = api.nvim_get_current_buf()
     eq('terminal', vim.bo[term].buftype)
@@ -2949,8 +2905,8 @@ describe('a key that gives way: what names it follows, wherever it was', functio
       return chat(h)
     end)
     actions().read(store().get(key(c)))
-    has(pane_title(), 'q back')
-    has(pane_title(), ']] [[ prompts')
+    has(bar(), 'q Back')
+    has(bar(), ']] [[ Prompts')
     local pressed = {}
     user_map('n', ']]', function()
       pressed[#pressed + 1] = ']]'
@@ -2964,11 +2920,11 @@ describe('a key that gives way: what names it follows, wherever it was', functio
     eq('agent-chats-conversation', vim.bo.filetype, 'still in the conversation')
     vim.wait(30)
     -- The other key for the next prompt is named now.
-    hasnt(pane_title(), ']] [[ prompts')
-    has(pane_title(), 'J [[ prompts')
+    hasnt(bar(), ']] [[ Prompts')
+    has(bar(), 'J [[ Prompts')
     -- No key goes back: closing the window does, and that is said.
-    hasnt(pane_title(), ' q back')
-    has(pane_title(), ' :q back')
+    hasnt(bar(), ' q Back')
+    has(bar(), ' :q Back')
   end)
 
   it("in a chat's terminal", function()
@@ -2976,7 +2932,7 @@ describe('a key that gives way: what names it follows, wherever it was', functio
       return chat(h)
     end)
     hosted(home, c)
-    has(pane_title(), '| q back')
+    has(bar(), ' q Back |')
     local pressed = 0
     user_map('n', 'q', function()
       pressed = pressed + 1
@@ -2985,7 +2941,7 @@ describe('a key that gives way: what names it follows, wherever it was', functio
     eq(1, pressed)
     eq('terminal', vim.bo.buftype, 'still in the terminal')
     vim.wait(30)
-    has(pane_title(), '| :q back')
+    has(bar(), ' :q Back |')
   end)
 
   it('on the list, for a mapping put on the list itself', function()
@@ -2993,7 +2949,7 @@ describe('a key that gives way: what names it follows, wherever it was', functio
       chat(h)
     end)
     local S = board()._state
-    has(bar(), 'C conversation')
+    has(bar(), 'C Conversation')
     local pressed = 0
     vim.keymap.set('n', 'C', function()
       pressed = pressed + 1
@@ -3001,14 +2957,15 @@ describe('a key that gives way: what names it follows, wherever it was', functio
     -- As after the command that made it.
     api.nvim_exec_autocmds('CmdlineLeave', {})
     vim.wait(30)
-    hasnt(bar(), 'C conversation')
+    hasnt(bar(), 'C Conversation')
     feed('C')
     eq(1, pressed)
     -- Or, made some other way, at the next move of the cursor.
-    vim.keymap.set('n', 'P', function() end, { buffer = S.buf })
+    has(bar(), '+ New Chat')
+    vim.keymap.set('n', '+', function() end, { buffer = S.buf })
     api.nvim_exec_autocmds('CursorMoved', { buffer = S.buf })
     vim.wait(30)
-    hasnt(bar(), 'P pass')
+    hasnt(bar(), '+ New')
   end)
 
   it('is typed again as it was: with its count, and ahead of what follows', function()
@@ -3033,8 +2990,8 @@ describe('a key that gives way: what names it follows, wherever it was', functio
   end)
 end)
 
-describe('the bar: why something is missing, at an ordinary width', function()
-  it('says it in short where the long form does not fit', function()
+describe('the bar: why Enter only reads a chat', function()
+  it('is said where there is room beside the keys, in full or in short', function()
     local _, made = open(function(h)
       local gone = chat(h, { title = 'Folder gone', cwd = '/nonexistent/for/tests', age = 60 })
       local away = chat(h, { title = 'Runs elsewhere', age = 120 })
@@ -3042,17 +2999,21 @@ describe('the bar: why something is missing, at an ordinary width', function()
       return { gone = gone, away = away }
     end)
     local S = board()._state
-    api.nvim_win_set_width(S.win, 74)
-    board().goto_chat(key(made.away))
-    board().render()
-    eq(' Enter read   (it runs outside this Neovim) | ? menu ', bar())
-    api.nvim_win_set_width(S.win, 46)
-    board().render()
-    eq(' Enter read   (runs elsewhere) | ? menu ', bar())
-    api.nvim_win_set_width(S.win, 38)
-    board().goto_chat(key(made.gone))
-    board().render()
-    eq(' Enter read   (folder gone) | ? menu ', bar())
+    local function at(width, c)
+      api.nvim_win_set_width(S.win, width)
+      board().goto_chat(key(c))
+      board().render()
+      return bar()
+    end
+    eq(' Enter Read  C Conversation   (it runs outside this Neovim)' .. ALWAYS, at(104, made.away))
+    eq(' Enter Read  C Conversation   (runs elsewhere)' .. ALWAYS, at(90, made.away))
+    eq(' Enter Read  C Conversation   (its folder is gone)' .. ALWAYS, at(94, made.gone))
+    eq(' Enter Read  C Conversation   (folder gone)' .. ALWAYS, at(88, made.gone))
+    -- With less room the keys stay, and where they are: the summary says
+    -- why as well, and so does the mark on the row or the heading above it.
+    eq(' Enter Read  C Conversation' .. ALWAYS, at(79, made.away))
+    eq(' Enter Read  C Conversation' .. ALWAYS, at(79, made.gone))
+    eq(' Enter Read | + New  S Search  ? Menu ', at(40, made.away))
   end)
 end)
 
@@ -3126,9 +3087,9 @@ describe("a chat's terminal: what your setup says goes back", function()
       hosted(home, c)
     end)
     -- The keys the plugin bound are the ones that go back, and are named.
-    has(pane_title(), '| q back')
+    has(bar(), ' q Back |')
     T.typing(function()
-      has(pane_title(), [[<C-\><C-b> back]])
+      has(bar(), [[<C-\><C-b> Back]])
     end)
     has(
       said,
@@ -3326,17 +3287,23 @@ describe('a reply watched arriving in the pane', function()
   end)
 end)
 
-describe("a chat's terminal: its title follows the chat", function()
+describe("a chat's terminal: the row that is marked follows the chat", function()
   it('takes the name the agent gives the chat while you are in it', function()
     local home, c = open(function(h)
       return chat(h, { title = 'First name' })
     end)
-    hosted(home, c)
-    has(pane_title(), 'LIVE  Claude · First name')
+    local _, term = hosted(home, c)
+    has(T.buf_text(board()._state.buf), 'First name')
     c:title('A better name'):write(os.time())
     store().refresh_sync()
-    has(pane_title(), 'LIVE  Claude · A better name')
-    has(pane_title(), '| q back')
+    -- The row that is marked as the one in the pane has the new name.
+    local S = board()._state
+    local ns = api.nvim_get_namespaces()['agent-chats-shown']
+    local mark = api.nvim_buf_get_extmarks(S.buf, ns, 0, -1, {})[1]
+    ok(mark, 'a row is marked')
+    has(api.nvim_buf_get_lines(S.buf, mark[2], mark[2] + 1, false)[1], 'A better name')
+    eq(term, api.nvim_win_get_buf(S.pane_win))
+    has(bar(), ' q Back |')
   end)
 end)
 
@@ -3344,8 +3311,8 @@ describe('what a chat is called', function()
   it('is the first line of its prompt, not the start of the next run on behind it', function()
     local title = require('agent-chats.display').title
     eq(
-      'Taking over the parser.',
-      title({ key = 'x:1', first_prompt = 'Taking over the parser.\n\nYou are taking over a task.' })
+      'Fix the parser.',
+      title({ key = 'x:1', first_prompt = 'Fix the parser.\n\nIt fails on empty input.' })
     )
     eq(
       'second line says it',
@@ -3355,39 +3322,6 @@ describe('what a chat is called', function()
     -- A title of the agent's own is used as it is.
     eq('Its own title', title({ key = 'x:4', title = 'Its own title', first_prompt = 'a\nb' }))
   end)
-end)
-
-describe('notes for another agent', function()
-  it(
-    "leave out the commands typed to the agent's own program, and a branch that is none",
-    function()
-      local c = {
-        key = 'claude:x',
-        provider = 'claude',
-        title = 'Fix the parser',
-        cwd = vim.uv.cwd(),
-        branch = 'HEAD',
-        first_prompt = 'Please fix the parser',
-      }
-      local notes_ = actions().notes_for(c, {
-        { role = 'user', text = 'Please fix the parser' },
-        { role = 'assistant', text = 'Fixed.' },
-        { role = 'user', text = '/exit', command = true },
-        { role = 'user', text = '/model opus', command = true },
-        { role = 'user', text = '/quit' },
-        { role = 'user', text = 'Now the docs. See /usr/share/doc for the format.' },
-        { role = 'assistant', text = 'Done.' },
-      })
-      hasnt(notes_, '/exit')
-      hasnt(notes_, '/model')
-      hasnt(notes_, '[user] /quit')
-      has(notes_, '[user] Now the docs. See /usr/share/doc for the format.')
-      has(notes_, '[agent] Done.')
-      hasnt(notes_, 'Branch')
-      c.branch = 'feature/x'
-      has(actions().notes_for(c, {}), 'Branch: feature/x')
-    end
-  )
 end)
 
 describe('a reply that is being answered in the background', function()
@@ -3411,11 +3345,11 @@ describe('a reply that is being answered in the background', function()
     board().goto_chat(key(c))
     board().render()
     local S = board()._state
-    api.nvim_win_set_width(S.win, 100)
+    api.nvim_win_set_width(S.win, 104)
     board().render()
-    has(bar(), 'Enter read')
+    has(bar(), 'Enter Read')
     has(bar(), '(answering in the background)')
-    hasnt(bar(), 'queue')
+    hasnt(bar():lower(), 'queue')
     has(pane():gsub('\n%s*', ' '), 'A reply sent from here is being answered in the background')
     hasnt(pane(), 'type in its own terminal')
     local said = notes(function()
@@ -3524,13 +3458,12 @@ end)
 describe('the footer of a box', function()
   it('says less on a narrow screen, and always how to send', function()
     local input = require('agent-chats.ui.input')
-    local reply = { title = 'Reply' }
     -- Every key the box has is named where there is room.
-    eq(' <C-s> send · Enter send (normal mode) · q / Esc cancel ', input.footer(reply))
-    eq(' <C-s> send · Enter send (normal) · q / Esc cancel ', input.footer(reply, 52))
+    eq(' <C-s> Send · Enter Send (normal mode) · q / Esc Cancel ', input.footer())
+    eq(' <C-s> Send · Enter Send (normal) · q / Esc Cancel ', input.footer(52))
     -- How to call it off is kept longer than a second way to send.
-    eq(' <C-s> send · q / Esc cancel ', input.footer(reply, 40))
-    eq(' <C-s> send ', input.footer(reply, 20))
+    eq(' <C-s> Send · q / Esc Cancel ', input.footer(40))
+    eq(' <C-s> Send ', input.footer(20))
   end)
 end)
 

@@ -4,8 +4,9 @@
 -- A reply is only ever typed into a terminal of this Neovim that has the
 -- chat open. It never starts an agent: if the chat ends first (you quit
 -- the agent, it crashed, Neovim was closed), its replies are kept, you
--- are told, and from then on they go only when you say so: Q on the chat
--- sends or drops them. Opening the chat again does not send them.
+-- are told, and from then on they go only when you say so: "Queued
+-- replies" in the chat's menu sends or drops them. Opening the chat again
+-- does not send them.
 --
 -- The queue lives in the shared state file. Taking a reply off it is a
 -- locked operation, so two instances never send the same one; and the

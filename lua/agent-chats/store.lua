@@ -96,6 +96,8 @@ local function report(where, err)
 end
 
 local counts_cache
+-- The options the counts were made under (what they filter out is not counted).
+local counts_under
 
 local function emit(event)
   counts_cache = nil
@@ -1060,7 +1062,15 @@ local function restatus(now, quiet)
   for key, chat in pairs(M.chats) do
     local st, inferred = status.derive(chat, state.seen(key), now, cfg)
     -- Finishing while you are looking at its terminal is not "unread".
-    if st == 'done' and term and chat.term and term.is_focused(chat.term) then
+    -- (Not for a chat you marked unread yourself: that mark stays until
+    -- you go into the chat, however long its terminal is in front of you.)
+    if
+      st == 'done'
+      and state.seen(key) ~= 0
+      and term
+      and chat.term
+      and term.is_focused(chat.term)
+    then
       state.mark_seen(key)
       st = chat.live and 'idle' or 'ended'
     end
@@ -1487,19 +1497,23 @@ function M.list(opts)
   return out
 end
 
---- How many chats are in each status (archived ones left out).
+--- How many chats are in each status. Archived ones are left out, and so
+--- are those in folders the options filter out (`filter_out`).
 ---@return table<agent_chats.Status, integer>
 function M.counts()
-  if counts_cache then
+  local cfg = config.get()
+  if counts_cache and counts_under == cfg then
     return counts_cache
   end
   local c = { attention = 0, working = 0, done = 0, idle = 0, ended = 0 }
   for _, chat in ipairs(M.list()) do
-    local st = chat.status or 'ended'
-    c[st] = (c[st] or 0) + 1
+    if not config.filtered(chat.cwd) then
+      local st = chat.status or 'ended'
+      c[st] = (c[st] or 0) + 1
+    end
   end
   if M.initialized then
-    counts_cache = c
+    counts_cache, counts_under = c, cfg
   end
   return c
 end

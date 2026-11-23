@@ -116,7 +116,7 @@ local function confirm(plans, problems, done)
   end
   local buf, win = float(lines, {
     title = action == 'install' and 'Install status hooks?' or 'Remove status hooks?',
-    footer = 'y apply · n cancel',
+    footer = 'y Apply · n Cancel',
     filetype = 'diff',
   })
   local mine
@@ -247,7 +247,7 @@ function M.show(names)
   end
   -- One at a time: asked for again, it takes the place of the last one.
   close_win(by_hand)
-  local buf, win = float(lines, { title = 'Status hooks, by hand', footer = 'q close' })
+  local buf, win = float(lines, { title = 'Status hooks, by hand', footer = 'q Close' })
   by_hand = win
   for _, lhs in ipairs({ 'q', '<Esc>' }) do
     vim.keymap.set('n', lhs, function()

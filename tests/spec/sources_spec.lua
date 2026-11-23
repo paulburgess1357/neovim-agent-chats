@@ -310,7 +310,9 @@ describe('a chat started by another chat', function()
     eq(c.key, p.through)
     eq(1, store().counts().attention, 'the nested chat is not counted twice')
     local display = require('agent-chats.display')
-    has(display.status(p), 'a chat it started')
+    -- Its summary says so, and what the nested chat is waiting for.
+    local summary = table.concat(require('agent-chats.ui.preview').lines(p), '\n')
+    has(summary, 'Needs you: a chat it started is waiting.')
     has(table.concat(display.waiting(p, store().get), '\n'), 'permission to use run_shell_command')
 
     hk.event('qwen', child.id, 'PostToolUse', { tool = 'run_shell_command' })

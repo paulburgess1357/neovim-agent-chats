@@ -2,8 +2,7 @@
 
 local M = {}
 
---- Where each agent's status comes from, in words. Shared with the board's
---- help so both say the same thing.
+--- Where each agent's status comes from, in words.
 ---@param p agent_chats.Provider
 ---@return { level: "ok"|"info"|"warn", text: string, advice: string[]? }[]
 function M.sources(p)
@@ -122,13 +121,8 @@ function M.keys()
   -- counts); otherwise as seen from any buffer: the global mappings.
   local board = package.loaded['agent-chats.ui.board']
   local buf = board and board.buf() or nil
-  -- What the menu does not list: these only move the cursor or the view.
-  local unlisted = {
-    next_prompt = 'moving to the next prompt in a conversation',
-    prev_prompt = 'moving to the previous prompt in a conversation',
-    scroll_down = 'scrolling the pane',
-    scroll_up = 'scrolling the pane',
-  }
+  -- What is done in a conversation is in the menu that is opened there.
+  local in_conversation = { next_prompt = true, prev_prompt = true }
   for _, action in ipairs(actions) do
     local plan = keys.resolve(action, 'n', buf)
     local other = keys.shown(plan.bound)
@@ -139,8 +133,8 @@ function M.keys()
       elseif action == 'menu' then
         -- The menu cannot be what lists its own way in.
         rest = ('%s opens it, and it has no key'):format(config.command('menu'))
-      elseif unlisted[action] then
-        rest = ('%s has no key now'):format(unlisted[action])
+      elseif in_conversation[action] then
+        rest = 'that is in the menu of a conversation, and has no key'
       else
         rest = 'that is in the menu, and has no key'
       end
@@ -201,6 +195,15 @@ function M.check()
   end
   h.info('Saved state: ' .. fs.tilde(require('agent-chats.state').path()))
   h.info('Hook events: ' .. fs.tilde(require('agent-chats.events').dir()))
+  local filtered = config.get().filter_out
+  if #filtered > 0 then
+    -- Why some chats are not among the others, for whoever looks for one.
+    h.info(
+      ('Folders filtered out (filter_out): %s. Their chats are under "Filtered out" at the end of the list'):format(
+        table.concat(filtered, ', ')
+      )
+    )
+  end
 
   h.start('agent-chats: agents')
   local found = 0

@@ -49,23 +49,6 @@ function M.where(chat)
   return table.concat(parts, ' · ')
 end
 
---- The status in words, with what is known about it.
-function M.status(chat)
-  local s = status.short[chat.status] or chat.status or ''
-  if chat.status == 'attention' then
-    if chat.through then
-      s = s .. ' (a chat it started is waiting)'
-    elseif chat.inferred then
-      s = s .. '? (quiet on a tool call)'
-    elseif chat.waiting_for and chat.waiting_for ~= '' then
-      s = s .. ' (' .. chat.waiting_for .. ')'
-    elseif chat.asking then
-      s = s .. ' (asked a question)'
-    end
-  end
-  return s
-end
-
 -- Where a running chat's status comes from, in a few words.
 local SOURCES = {
   hooks = 'its hooks',

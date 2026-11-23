@@ -276,11 +276,6 @@ function M.toggle_pin(key)
 end
 
 --- When `key` was archived (nil when it is not).
-function M.archived_at(key)
-  return M.get().archived[key]
-end
-
---- A chat is hidden while it has seen no activity since it was archived.
 function M.is_archived(key, updated)
   local at = M.get().archived[key]
   return at ~= nil and (updated or 0) <= at
@@ -332,6 +327,20 @@ function M.set_group(key, name)
   end)
 end
 
+--- Every chat of the group called `old` goes to the one called `new`
+--- (which may be a group there is already); nil or '' takes them out of
+--- every group.
+function M.rename_group(old, new)
+  new = type(new) == 'string' and vim.trim(new) or ''
+  M.update(function(s)
+    for key, name in pairs(s.groups) do
+      if name == old then
+        s.groups[key] = new ~= '' and new or nil
+      end
+    end
+  end)
+end
+
 --- The groups there are (those with a chat in them), by name, and how
 --- many chats each has.
 ---@param known (fun(key: string): boolean)?  Which chats count: one that is gone from its agent's own store is still written here.
@@ -374,7 +383,6 @@ end
 
 ---@class agent_chats.Queued
 ---@field text string
----@field at number
 
 ---@return agent_chats.Queued[]
 function M.queue(key)
@@ -384,7 +392,7 @@ end
 function M.enqueue(key, text)
   M.update(function(s)
     local q = s.queue[key] or {}
-    q[#q + 1] = { text = text, at = os.time() }
+    q[#q + 1] = { text = text }
     s.queue[key] = q
   end)
 end
@@ -498,8 +506,9 @@ function M.remove_queued(key, index)
   end)
 end
 
---- Whether the replies queued for `key` wait for you (Q sends or drops
---- them) instead of going out when the chat is free.
+--- Whether the replies queued for `key` wait for you ("Queued replies"
+--- in the chat's menu sends or drops them) instead of going out when the
+--- chat is free.
 ---@return boolean
 function M.parked(key)
   return M.get().parked[key] == true
