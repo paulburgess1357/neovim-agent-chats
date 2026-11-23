@@ -96,9 +96,17 @@ for message in pairs(undeclared) do
 end
 -- Everything under it, names that start with a dot included (`~/.claude`
 -- is where an installer would write), folders included: only the empty
--- `home` made above belongs there.
+-- `home` made above belongs there. And what Neovim makes for itself: from
+-- 0.13 on it keeps its logs in a folder under its state folder, and makes
+-- that as it runs. (The plugin's own state would be beside it, in
+-- `agent-chats`, and that is still found.)
+local app = 'xdg_state_home/' .. (vim.env.NVIM_APPNAME or 'nvim')
+local neovims = { xdg_state_home = true, [app] = true, [app .. '/logs'] = true }
 for name, kind in vim.fs.dir(sandbox, { depth = 20 }) do
-  if not (name == 'home' and kind == 'directory') then
+  local own = (name == 'home' and kind == 'directory')
+    or (neovims[name] and kind == 'directory')
+    or name:sub(1, #app + 6) == app .. '/logs/'
+  if not own then
     ok = false
     io.stdout:write(('DEFAULT LOCATION written to by a spec: %s (%s)\n'):format(name, kind))
   end

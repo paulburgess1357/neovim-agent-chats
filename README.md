@@ -31,39 +31,71 @@ With lazy.nvim:
 { 'paulburgess1357/neovim-agent-chats', main = 'agent-chats', opts = {} }
 ```
 
-Then, once, run `:Chats hooks install` (see [Status hooks](#status-hooks)).
+## Set up
 
-## Use
+**1. Open it.** `:Chats` opens the board. Nothing is mapped globally, so give it a key if you like:
 
-`:Chats` opens the board: the list of chats on the left, and the chat under the cursor on the right. The bar above the list names the keys: at its left what `Enter` does with the row you are on, at its right the others. `?` opens a menu with everything else, so nothing has to be remembered.
+```lua
+vim.keymap.set('n', '<leader>ac', '<Plug>(agent-chats)')
+```
 
-- `Enter` goes into a chat, and you type there. A chat running in this Neovim is focused, one that ended is resumed in its own folder, and one running somewhere else can only be read.
-- Chats are listed by what they are doing: Needs you, Working, Unread, Idle, Ended. The menu groups them by folder, agent or worktree instead, and puts a chat in a group of your own.
-- The search looks in every chat, inside the conversations too.
-- A reply can be queued for when a chat finishes its turn.
-- You are told when a chat needs you or finishes a turn. The menu switches that off and on.
-- Chats in folders you name in `filter_out` are kept out of the way, under one folded heading.
+**2. Install the status hooks, once.** Run `:Chats hooks install`. It adds a small hook to the settings of each agent you have, so that the agent itself reports when it is working, when it needs you and when it has finished. It shows every line it is about to change and asks before it writes anything, and `:Chats hooks uninstall` takes it all out again. The board works without the hooks, but for every agent except Claude Code "Needs you" is then a guess.
 
-### Keys
+**3. Configure it, if you want to.** Every option has a default, so `setup()` with nothing in it is enough. Options go in the same call, in your `init.lua` (with lazy.nvim, in `opts`):
 
-| Key | What it does |
+```lua
+require('agent-chats').setup({
+  filter_out = { 'scratch' }, -- folders whose chats are kept out of the way (see below)
+  board = { layout = 'float' }, -- 'tab' (the default), 'float' or 'current'
+  notify = { enabled = false }, -- no notifications
+  keys = { pin = 'P' }, -- give something in the menu a key of its own
+})
+```
+
+Every option, with its default and what it does, is in the manual: [`doc/agent-chats.txt`](doc/agent-chats.txt), or `:help agent-chats-options` in Neovim.
+
+## Using the board
+
+The list on the left has every chat, under what it is doing:
+
+| Heading | What it means |
 | --- | --- |
-| `Enter` | Go into the chat and type. On a heading: fold or unfold the group |
-| `C` | Read the whole conversation (`]]` and `[[`, or `J` and `K`, move between your prompts) |
-| `+` | New chat: pick the agent, and it opens |
-| `S` or `/` | Search every chat |
-| `R` | Refresh now (the list also refreshes by itself) |
-| `A` | Archive the chat: it goes under "Archived", at the very end of the list. On an archived chat: take it out again |
-| `?` or `g?` | The menu: everything else |
-| `q` | Back: out of a conversation, out of a search, out of the board |
-| `Esc` | End a search |
-| `Tab` | Fold a group, or show a chat's subagents |
+| Needs you | The agent is waiting for your answer: a question, a permission |
+| Working | The agent is in the middle of a turn |
+| Unread | It finished since you last looked |
+| Idle | Open, nothing new |
+| Ended | Not open anywhere; it can be resumed |
 
-The letters are capitals, so every lowercase key stays what it is, and a default key is not bound where you have a mapping of your own on it. While you type in a chat every key goes to the agent: `<C-\><C-b>` goes back to the list.
+The pane on the right shows the chat under the cursor: its live terminal when it runs in this Neovim, a summary otherwise. `Enter` goes into the chat, and you type there as you would in any terminal. A chat that ended is resumed, in its own folder.
 
-Everything else is in the menu, and can be given a key in the `keys` option: rename, pin, label, note, a group of your own, queue a reply, a diff of the chat's folder, notifications.
+You do not have to learn any keys. The bar above the list names them: what `Enter` does with the row you are on, then the rest.
 
-### Commands
+## The menu
+
+`?` opens the menu (`g?` if `?` is a key of your own; the bar says which). It lists everything that can be done, in words, and a line that has a key shows it, so the keys are picked up as you go. Choose a line with `Enter` or a click.
+
+- **This chat.** Go into it, read the whole conversation, queue a reply to be sent when the agent finishes its turn, see what changed in its folder.
+- **Keep track of it.** Rename it, pin it to the top of its group, put it in a group of your own, give it labels or a note (the note is shown on its row), mark it read or unread, archive it, copy the command that resumes it.
+- **The list.** Start a new chat, search every chat (inside the conversations too), group the list by folder, agent or worktree, show older chats, mark everything read.
+- **The board.** Hide the pane, refresh, see or set up the status hooks, switch notifications off and on, close the board.
+
+## Keeping chats out of the way
+
+**Filter folders out.** Chats you never want among the others (the ones a test suite starts, a scratch folder) are filtered out by their folder, with a list in the options:
+
+```lua
+require('agent-chats').setup({
+  filter_out = { 'scratch', '~/tmp/experiments' },
+})
+```
+
+A name stands for every folder called that, wherever it is, and everything inside it. A path stands for that one folder and everything inside it. Their chats go under one heading, "Filtered out", at the end of the list and folded. They are not counted and you are not notified about them; a search still finds them.
+
+**Archive a chat.** "Archive it" in the menu (`A`) puts one chat under "Archived", at the very end of the list. The same on an archived chat takes it out again, and a chat that becomes active again comes back by itself.
+
+**Folder gone.** A chat whose folder no longer exists cannot be resumed, only read. Those are under a heading of their own as well.
+
+## Commands
 
 | Command | Action |
 | --- | --- |
@@ -71,37 +103,14 @@ Everything else is in the menu, and can be given a key in the `keys` option: ren
 | `:Chats new [agent]` | Start a new chat |
 | `:Chats next` | Go into the next chat that needs you, or the next unread one |
 | `:Chats search [text]` | Search every chat |
+| `:Chats hooks` | See which status hooks are installed |
 | `:Chats notify [on\|off]` | Switch notifications |
-
-Nothing is mapped globally. For example:
-
-```lua
-vim.keymap.set('n', '<leader>ac', '<Plug>(agent-chats)')      -- the board
-vim.keymap.set('n', '<leader>an', '<Plug>(agent-chats-next)') -- next chat that needs you
-```
 
 `require('agent-chats').statusline()` returns a segment such as `● 2  ◐ 3  ✓ 1` for your statusline.
 
-## Status hooks
-
-`:Chats hooks install` lets each agent report its own status. It shows every line it is about to change in the agent's settings and asks before writing, and `:Chats hooks uninstall` takes them out again. The board works without the hooks, but for every agent except Claude Code "Needs you" is then a guess.
-
-## Options
-
-`setup()` is optional, and so is every option. A few that are often wanted:
-
-```lua
-require('agent-chats').setup({
-  filter_out = { 'scratch' }, -- folders whose chats are kept out of the way
-  board = { layout = 'float' }, -- 'tab' (the default), 'float' or 'current'
-  notify = { enabled = false }, -- no notifications
-  keys = { pin = 'P' }, -- give something in the menu a key
-})
-```
-
 ## More
 
-`:help agent-chats` ([`doc/agent-chats.txt`](doc/agent-chats.txt)) is the full manual: every key, command and option with its default, groups, the search, the status hooks and how status is worked out, the Lua API and events, adding another agent, and the limits. A complete small agent is in [`examples/pal.lua`](examples/pal.lua).
+[`doc/agent-chats.txt`](doc/agent-chats.txt) (`:help agent-chats`) is the full manual: every key, command and option with its default, groups, the search, the status hooks and how status is worked out, the Lua API and events, adding another agent, and the limits. A complete small agent is in [`examples/pal.lua`](examples/pal.lua).
 
 `:checkhealth agent-chats` reports which agents were found and where each one's status comes from.
 

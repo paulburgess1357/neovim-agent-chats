@@ -83,26 +83,38 @@ describe('the documentation', function()
     eq({}, differences(setup_table(block, 'help options'), defaults))
   end)
 
-  it('names every key the board binds by default, in both', function()
-    -- As each of the two writes a key.
-    local written = {
-      readme = { ['<CR>'] = 'Enter', ['<Esc>'] = 'Esc', ['<Tab>'] = 'Tab' },
-      help = {},
-    }
-    local keys_section = readme:match('\n### Keys\n(.-)\n### ')
+  it('names every key the board binds by default, in the help file', function()
     local help_section = help:match('%*agent%-chats%-keys%*\n(.-)\n=====')
-    ok(keys_section and help_section, 'both have a section on keys')
+    ok(help_section, 'it has a section on keys')
     for action, lhs in pairs(defaults.keys) do
       for _, key in ipairs(type(lhs) == 'table' and lhs or { lhs }) do
         if type(key) == 'string' and not key:lower():find('mouse', 1, true) then
-          has(
-            keys_section,
-            '`' .. (written.readme[key] or key) .. '`',
-            ('README: the key of "%s"'):format(action)
-          )
-          has(help_section, written.help[key] or key, ('help file: the key of "%s"'):format(action))
+          has(help_section, key, ('the key of "%s"'):format(action))
         end
       end
+    end
+  end)
+
+  it('names in the README the parts the menu has, and what is in them', function()
+    -- The README sends a newcomer to the menu, not to a table of keys: what
+    -- it says the menu holds is what the menu says of itself.
+    local said = assert(readme:match('\n## The menu\n(.-)\n## '), 'a part on the menu')
+    local fx = require('helpers.claude')
+    local home = fx.home({ board = { spinner = false } })
+    local c = home:chat({ cwd = T.folder('here'), start = os.time() - 700 })
+    c:user('Do a thing'):title('A chat'):assistant('Done.'):turn_done():write(os.time() - 600)
+    require('agent-chats.store').refresh_sync()
+    require('agent-chats.store').start = function() end
+    local board = require('agent-chats.ui.board')
+    board.open()
+    board.goto_chat('claude:' .. c.id)
+    board.menu()
+    local menu = table.concat(require('agent-chats.ui.menu').lines(), '\n')
+    require('agent-chats.ui.menu').close()
+    board.close()
+    for _, part in ipairs({ 'This chat', 'Keep track of it', 'The list', 'The board' }) do
+      has(menu, '── ' .. part .. ' ', 'the menu')
+      has(said, '**' .. part .. '.**', 'the README')
     end
   end)
 
@@ -144,8 +156,9 @@ describe('the documentation', function()
       hasnt(text, 'Hand the chat', name)
       hasnt(text, 'handoff notes', name)
     end
-    local use = readme:match('\n## Use\n(.-)\n## Status hooks')
-    hasnt(use, 'transcript', 'README, the part on using the board')
-    hasnt(use, 'session', 'README, the part on using the board')
+    -- The README is for someone new: it says "chat" and "conversation",
+    -- as the board does.
+    hasnt(readme, 'transcript', 'README')
+    hasnt(readme, 'session', 'README')
   end)
 end)
