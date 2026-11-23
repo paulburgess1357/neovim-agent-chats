@@ -762,7 +762,7 @@ any of them:
 
 The annotated contract is in `lua/agent-chats/types.lua`,
 `lua/agent-chats/providers/claude.lua` is the reference implementation, and
-the README has a complete small provider.
+`examples/pal.lua` is a complete small provider.
 
 ==============================================================================
 LIMITS                                                    *agent-chats-limits*

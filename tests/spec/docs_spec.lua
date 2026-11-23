@@ -1,6 +1,7 @@
--- The README and the help file say what the code does: the options with
--- the defaults they really have, the keys that are really bound, and the
--- commands that really exist.
+-- The help file says what the code does, all of it: the options with the
+-- defaults they really have, the keys that are really bound, and the
+-- commands that really exist. The README is short: it does not say
+-- everything, and what it says is true.
 
 local T = require('helpers.harness')
 local eq, ok, has, hasnt = T.eq, T.ok, T.has, T.hasnt
@@ -44,14 +45,36 @@ local function differences(documented, defaults, path, out)
   return out
 end
 
+--- Every option that `given` names and `defaults` does not have, as a path.
+local function unknown(given, defaults, path, out)
+  out = out or {}
+  for k, v in pairs(given) do
+    local at = (path and (path .. '.') or '') .. tostring(k)
+    local d = defaults[k]
+    if d == nil then
+      out[#out + 1] = at
+    elseif type(v) == 'table' and type(d) == 'table' and next(d) ~= nil and not vim.islist(d) then
+      -- (A table of named options. A list, or a table that is empty by
+      -- default, takes whatever it is given.)
+      unknown(v, d, at, out)
+    end
+  end
+  table.sort(out)
+  return out
+end
+
 describe('the documentation', function()
   local readme, help = read('README.md'), read('doc/agent-chats.txt')
   local defaults = require('agent-chats.config').defaults
 
-  it('gives every option in the README with the default it has', function()
-    local from = assert(readme:find('\n## Options', 1, true))
-    local block = assert(readme:match('```lua\n(.-)\n```', from), 'no lua block under Options')
-    eq({}, differences(setup_table(block, 'README options'), defaults))
+  it('shows in the README only options that there are', function()
+    local shown = 0
+    for body in readme:gmatch("require%('agent%-chats'%)%.setup%((%b{})%)") do
+      shown = shown + 1
+      local given = assert(loadstring('return ' .. body, 'README setup ' .. shown))()
+      eq({}, unknown(given, defaults), 'setup() number ' .. shown .. ' in the README')
+    end
+    ok(shown > 0, 'the README shows a setup() with options')
   end)
 
   it('gives every option in the help file with the default it has', function()
@@ -83,10 +106,9 @@ describe('the documentation', function()
     end
   end)
 
-  it('names every action that can be given a key, in both', function()
+  it('names every action that can be given a key, in the help file', function()
     for action in pairs(defaults.keys) do
       has(help, action, 'help file: ' .. action)
-      has(readme, action, 'README: ' .. action)
     end
   end)
 
@@ -99,7 +121,6 @@ describe('the documentation', function()
       known[sub] = true
       if sub ~= 'open' then
         -- (After a range there is no colon: `:'<,'>Chats send`.)
-        has(readme, 'Chats ' .. sub, 'README: :Chats ' .. sub)
         has(help, 'Chats ' .. sub, 'help file: :Chats ' .. sub)
       end
     end

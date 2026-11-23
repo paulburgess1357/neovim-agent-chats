@@ -9,7 +9,7 @@
 --   DEMO_DUMP=board   the board as it opens
 --   DEMO_DUMP=all     every screen: summaries, a search, a conversation,
 --                     the menu, a live terminal
---   DEMO_DUMP=readme  the screen at the top of the README, and no more
+--   DEMO_DUMP=readme  one screen of the board, for a picture of it, and no more
 --   DEMO_INTRO=1      with the introduction a first opening shows
 --
 --   DEMO_DUMP=all nvim --clean --headless --cmd 'set columns=150 lines=40' \
