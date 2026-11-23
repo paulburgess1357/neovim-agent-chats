@@ -1,4 +1,4 @@
-# agent-chats.nvim
+# Neovim Agent Chats
 
 One board in Neovim for every AI agent chat on your machine: Claude Code, Codex, Qwen Code and opencode.
 
@@ -21,14 +21,14 @@ Developed and tested on Linux. It has never been run on macOS, and Windows is un
 With Neovim's built-in plugin manager (0.12):
 
 ```lua
-vim.pack.add({ 'https://github.com/paulburgess1357/agent-chats.nvim' })
+vim.pack.add({ 'https://github.com/paulburgess1357/neovim-agent-chats' })
 require('agent-chats').setup()
 ```
 
 With lazy.nvim:
 
 ```lua
-{ 'paulburgess1357/agent-chats.nvim', opts = {} }
+{ 'paulburgess1357/neovim-agent-chats', main = 'agent-chats', opts = {} }
 ```
 
 Then, once, run `:Chats hooks install` (see [Status hooks](#status-hooks)).

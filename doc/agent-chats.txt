@@ -23,7 +23,7 @@ CONTENTS                                                         *agent-chats*
 ==============================================================================
 INTRODUCTION                                        *agent-chats-introduction*
 
-agent-chats.nvim lists every chat of Claude Code, Codex, Qwen Code and
+Neovim Agent Chats lists every chat of Claude Code, Codex, Qwen Code and
 opencode in one place, shows which need you, and lets you go into, search
 and start chats from Neovim.
 

@@ -4,7 +4,7 @@ end
 vim.g.loaded_agent_chats = true
 
 if vim.fn.has('nvim-0.11') == 0 then
-  vim.notify('agent-chats.nvim needs Neovim 0.11 or newer', vim.log.levels.ERROR)
+  vim.notify('Neovim Agent Chats needs Neovim 0.11 or newer', vim.log.levels.ERROR)
   return
 end
 

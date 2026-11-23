@@ -1,4 +1,4 @@
--- agent-chats.nvim: see and manage every AI agent chat on this machine.
+-- Neovim Agent Chats: see and manage every AI agent chat on this machine.
 --
 --   require('agent-chats').setup({ ... })   -- optional; the defaults work
 --   :Chats                                  -- open the board
