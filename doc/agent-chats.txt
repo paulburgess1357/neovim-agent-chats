@@ -74,19 +74,18 @@ where the terminal is, and <CR> goes to it. Out of sight, it is shown live in
 the pane like any other.
 
 The bar above the list is the one place that names keys. At its left is what
-can be done with the row under the cursor; at its right what can be done with
-the list ("+ New Chat", "S Search", "R Refresh"), which stays where it is as
-the cursor moves; and last the way to the menu. "C Conversation" is there for
-every chat, also for one that <CR> can do no more than read: the key is always
-in the same place. Where there is room beside the keys, the bar says why
-<CR> only reads a chat ("it runs outside this Neovim", "its folder is gone";
-with less room "runs elsewhere", "folder gone"). On a narrow list the keys
-give way one by one: "R Refresh" first, then "C Conversation" (it is in the
-menu), then the search and the new chat; what <CR> does and the menu stay the
-longest. With the
-cursor in the pane (a chat, a conversation) the bar names the keys of that
-view instead, the way back first of all. The first line of the list counts
-the chats.
+<CR> does with the row under the cursor; every other key is at its right:
+those of the row ("C Conversation", "A Archive"), then those of the list
+("+ New Chat", "S Search", "R Refresh"), which stay where they are as the
+cursor moves, and last the way to the menu. "C Conversation" is there for
+every chat, also for one that <CR> can do no more than read. Where there is
+room, the bar says behind <CR> why it only reads a chat ("it runs outside this
+Neovim", "its folder is gone"; with less room "runs elsewhere", "folder
+gone"). On a narrow list the keys give way one by one: "R Refresh" first, then
+"A Archive" and "C Conversation" (they are in the menu), then the search and
+the new chat; what <CR> does and the menu stay the longest. With the cursor in
+the pane (a chat, a conversation) the bar names the keys of that view instead,
+the way back first of all. The first line of the list counts the chats.
 
 Marks on a row: `»2` two replies wait to be sent to the chat, `↗` it runs
 outside this Neovim, `✎` a note of yours. What the note says follows its mark

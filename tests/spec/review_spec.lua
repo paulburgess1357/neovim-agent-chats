@@ -1597,6 +1597,12 @@ describe('review: rows and headings', function()
       drawn = drawn + 1
       return real(...)
     end
+    -- (Nothing an earlier test asked git is still on its way: in a checkout
+    -- git is slow in, such an answer would be counted here.)
+    T.wait(10000, function()
+      return not require('agent-chats.util.git').busy()
+    end)
+    vim.wait(50)
     local good, err = pcall(function()
       board().set_group('folder')
       local before = drawn
@@ -1711,14 +1717,13 @@ describe('review: the bar', function()
     end
     -- Behind what Enter does, and in short before a key at the right would
     -- have to move: those are where they are on every row.
-    local rest = '  C Conversation  A Archive'
-    local all = ' | + New Chat  S Search  R Refresh  ? Menu '
-    eq(' Enter Read (it runs outside this Neovim)' .. rest .. all, at(112))
-    eq(' Enter Read (runs elsewhere)' .. rest .. all, at(98))
+    local all = ' | C Conversation  A Archive  + New Chat  S Search  R Refresh  ? Menu '
+    eq(' Enter Read (it runs outside this Neovim)' .. all, at(112))
+    eq(' Enter Read (runs elsewhere)' .. all, at(98))
     -- With less room the keys stay: the mark on the row and the summary
     -- say the same.
-    eq(' Enter Read' .. rest .. ' | + New Chat  S Search  ? Menu ', at(80))
-    eq(' Enter Read  C Conversation | + New  S Search  ? Menu ', at(58))
+    eq(' Enter Read | C Conversation  A Archive  + New Chat  S Search  ? Menu ', at(80))
+    eq(' Enter Read | C Conversation  + New  S Search  ? Menu ', at(58))
     has(list(), '↗')
     home:unregister(uv.os_getpid())
   end)

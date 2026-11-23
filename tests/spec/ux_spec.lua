@@ -73,11 +73,13 @@ local function bar(win)
   return (raw:gsub('%%#%w+#', ''):gsub('%%%*', ''):gsub('%%=', ' | '))
 end
 
--- The right of the bar: the keys that are there on every row. On a list of
--- ordinary width, where the keys of a row have their room first; and on a
--- wide one, all of them.
+-- The right of the bar. The keys that are there on every row: on a list of
+-- ordinary width, where the keys of a row have their room first, and on a
+-- wide one, all of them. And the same with the keys every chat has.
 local ALWAYS = ' | + New Chat  S Search  ? Menu '
 local ALL = ' | + New Chat  S Search  R Refresh  ? Menu '
+local ROW = ' | C Conversation  A Archive  + New Chat  S Search  ? Menu '
+local ROW_ALL = ' | C Conversation  A Archive  + New Chat  S Search  R Refresh  ? Menu '
 
 --- What the pane has for a bar of its own: nothing, whatever it shows.
 local function pane_bar()
@@ -453,36 +455,35 @@ describe('the bar above the list', function()
 
     -- An ended chat: Enter resumes it, and what is said to it is typed there.
     -- (At the right, the keys that are there on every row.)
-    local always = ALWAYS
-    eq(' Enter Resume  C Conversation  A Archive' .. always, on(key(c)))
+    eq(' Enter Resume' .. ROW, on(key(c)))
     -- One whose folder is gone can only be read. (The key for the
     -- conversation is named all the same: it is where it is on every chat.
     -- Why Enter only reads it is said where there is room: see below.)
-    eq(' Enter Read  C Conversation  A Archive' .. always, on(key(made.gone)))
+    eq(' Enter Read' .. ROW, on(key(made.gone)))
     -- So can one that runs outside this Neovim.
-    eq(' Enter Read  C Conversation  A Archive' .. always, on(key(made.away)))
+    eq(' Enter Read' .. ROW, on(key(made.away)))
 
     -- In a terminal of this Neovim: Enter goes to it.
     local _, term = hosted(home, c)
     board().focus()
-    eq(' Enter Open  C Conversation  A Archive' .. ALWAYS, on(key(c)))
+    eq(' Enter Open' .. ROW, on(key(c)))
     local pid = store().get(key(c)).pid
     -- Busy: the same two. (A reply can be queued for it from the menu.)
     home:registry(pid, { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() })
     store().refresh_sync({ full = false })
-    eq(' Enter Open  C Conversation  A Archive' .. ALWAYS, on(key(c)))
+    eq(' Enter Open' .. ROW, on(key(c)))
     -- Asking: Enter goes to answer it.
     home:registry(
       pid,
       { sessionId = c.id, status = 'waiting', waitingFor = 'permission', cwd = vim.uv.cwd() }
     )
     store().refresh_sync({ full = false })
-    eq(' Enter Answer  C Conversation  A Archive' .. ALWAYS, on(key(c)))
+    eq(' Enter Answer' .. ROW, on(key(c)))
     -- With something queued, its row says so; the bar names no key for
     -- what has none.
     state().enqueue(key(c), 'then the docs')
     board().render()
-    eq(' Enter Answer  C Conversation  A Archive' .. ALWAYS, bar())
+    eq(' Enter Answer' .. ROW, bar())
     has(list(), '»1')
     ok(api.nvim_buf_is_valid(term))
 
@@ -523,18 +524,18 @@ describe('the bar above the list', function()
     board().focus()
     board().goto_chat(key(c))
     -- (Nothing to queue behind: the chat is not in the middle of a turn.)
-    eq(' Enter Open  C Conversation  A Archive' .. ALWAYS, bar())
+    eq(' Enter Open' .. ROW, bar())
     home:registry(
       store().get(key(c)).pid,
       { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() }
     )
     store().refresh_sync({ full = false })
     board().render()
-    -- (Beside the keys that are always there, the row has room for three.)
-    has(bar(), 'Enter Open  Q Queue a Reply  C Conversation | + New Chat')
+    -- (With the keys of the list: the last key of the row gives way.)
+    has(bar(), 'Enter Open | Q Queue a Reply  C Conversation  + New')
     api.nvim_win_set_width(board()._state.win, 100)
     board().render()
-    has(bar(), 'Enter Open  Q Queue a Reply  C Conversation  A Archive | + New Chat')
+    has(bar(), 'Enter Open | Q Queue a Reply  C Conversation  A Archive  + New Chat')
     state().enqueue(key(c), 'then the docs')
     board().render()
     has(bar(), 'Q Queued Replies (1)')
@@ -550,15 +551,14 @@ describe('the bar above the list', function()
       board().render()
       return bar()
     end
-    -- The key that is needed least goes first, and a long label is
-    -- shortened; then the keys of the row give way to a new chat and the
-    -- search, the last of them first; then those go, and last what Enter
-    -- does.
-    local row = ' Enter Resume  C Conversation  A Archive'
-    eq(row .. ' | + New Chat  S Search  R Refresh  ? Menu ', at(84))
-    eq(row .. ' | + New Chat  S Search  ? Menu ', at(76))
-    eq(row .. ' | + New  S Search  ? Menu ', at(68))
-    eq(' Enter Resume  C Conversation | + New  S Search  ? Menu ', at(56))
+    -- What Enter does is at the left, every other key at the right. The
+    -- key that is needed least goes first, and a long label is shortened;
+    -- then the keys of the row give way to a new chat and the search, the
+    -- last of them first; then those go, and last what Enter does.
+    eq(' Enter Resume' .. ROW_ALL, at(84))
+    eq(' Enter Resume' .. ROW, at(76))
+    eq(' Enter Resume | C Conversation  A Archive  + New  S Search  ? Menu ', at(68))
+    eq(' Enter Resume | C Conversation  + New  S Search  ? Menu ', at(56))
     eq(' Enter Resume | + New  S Search  ? Menu ', at(48))
     eq(' Enter Resume | + New  S Search  ? Menu ', at(39))
     eq(' Enter Resume | + New  ? Menu ', at(30))
@@ -1228,6 +1228,9 @@ describe('the summary', function()
       return { here = here, gone = gone, away = away }
     end)
     local tilde = vim.fn.fnamemodify(vim.uv.cwd(), ':~')
+    -- (In a sentence a long folder is without its start: how long this
+    -- one is depends on where the tests are run.)
+    local short = require('agent-chats.util.fs').short(vim.uv.cwd(), 56)
     local function lines_of(k)
       board().goto_chat(k)
       return vim.split(pane(), '\n', { plain = true })
@@ -1236,9 +1239,12 @@ describe('the summary', function()
     local here = lines_of(key(made.here))
     eq('# Folder is here', here[1])
     has(here[3], '· Ended 10m ago.')
-    eq('  Enter resumes it in ' .. tilde .. '.', here[4])
-    eq('Folder  ' .. tilde .. ' · main', here[6])
-    has(here[7], 'Agent   Claude')
+    eq('  Enter resumes it in ' .. short .. '.', here[4])
+    -- (A folder too long for the pane goes on under its own words: how
+    -- long this one is depends on where the tests are run.)
+    local facts = table.concat(here, '\n'):gsub('\n +', ' ')
+    has(facts, 'Folder  ' .. tilde .. ' · main\n')
+    has(facts, '\nAgent   Claude')
     -- Its folder gone: said twice, where it matters.
     local gone = table.concat(lines_of(key(made.gone)), '\n')
     has(gone, 'Its folder is gone, so it cannot be resumed. Enter reads it.')
@@ -1519,8 +1525,10 @@ describe('a new chat', function()
     end
     feed('+')
     restore()
-    -- The question says where the chat will start.
-    eq(('New chat in %s. Which agent?'):format(vim.fn.fnamemodify(vim.uv.cwd(), ':~')), asked)
+    -- The question says where the chat will start (a long folder without
+    -- its start: how long this one is depends on where the tests are run).
+    local folder = require('agent-chats.util.fs').short(vim.uv.cwd(), 44)
+    eq(('New chat in %s. Which agent?'):format(folder), asked)
     eq(2, #offered)
     ok(offered[1].agent and offered[1].agent.label == 'Claude')
     ok(offered[2].folder, 'the last line leads to another folder')
@@ -1668,11 +1676,14 @@ end)
 
 describe('with the mouse, or in a borrowed window', function()
   it('opens a chat on a double click and the menu on a right click, where the click was', function()
-    local _, made = open(function(h)
+    local home, made = open(function(h)
       local a = chat(h, { title = 'Chat A', age = 10 })
       local b = chat(h, { title = 'Chat B', age = 20 })
       return { a = a, b = b }
     end)
+    -- (A stand-in for the agent: the chat is resumed, and no machine the
+    -- tests run on has to have the real one.)
+    fake.install(home)
     local S = board()._state
     local line_of = {}
     for i, row in ipairs(S.rows) do
@@ -2790,13 +2801,13 @@ describe('the summary, when the cursor ends up in it', function()
     eq(S.pane_win, api.nvim_get_current_win())
     -- The keys there are the list's, on the chat it shows; the one that
     -- goes back is named with them.
-    eq(' Enter Resume  C Conversation  A Archive  q Back' .. ALWAYS, bar())
+    eq(' Enter Resume | C Conversation  A Archive  q Back  + New Chat  S Search  ? Menu ', bar())
     eq('', pane_bar())
     feed('q')
     eq(S.win, api.nvim_get_current_win())
     ok(board().is_open(), 'back is one step: to the list, not out of the board')
     vim.wait(30)
-    eq(' Enter Resume  C Conversation  A Archive' .. ALWAYS, bar())
+    eq(' Enter Resume' .. ROW, bar())
   end)
 
   it('leaves the key to you there too, and then names the command', function()
@@ -2808,7 +2819,10 @@ describe('the summary, when the cursor ends up in it', function()
     no(vim.fn.maparg('q', 'n', false, true).buffer == 1)
     api.nvim_win_set_width(board()._state.win, 100)
     board().summary_entered()
-    eq(' Enter Resume  C Conversation  A Archive  :Chats Back' .. ALL, bar())
+    eq(
+      ' Enter Resume | C Conversation  A Archive  :Chats Back  + New Chat  S Search  R Refresh  ? Menu ',
+      bar()
+    )
   end)
 end)
 
@@ -3012,15 +3026,14 @@ describe('the bar: why Enter only reads a chat', function()
       return bar()
     end
     -- (Behind what Enter does: that is what it is about.)
-    local rest = '  C Conversation  A Archive'
-    eq(' Enter Read (it runs outside this Neovim)' .. rest .. ALL, at(112, made.away))
-    eq(' Enter Read (runs elsewhere)' .. rest .. ALL, at(98, made.away))
-    eq(' Enter Read (its folder is gone)' .. rest .. ALL, at(102, made.gone))
-    eq(' Enter Read (folder gone)' .. rest .. ALL, at(96, made.gone))
+    eq(' Enter Read (it runs outside this Neovim)' .. ROW_ALL, at(112, made.away))
+    eq(' Enter Read (runs elsewhere)' .. ROW_ALL, at(98, made.away))
+    eq(' Enter Read (its folder is gone)' .. ROW_ALL, at(102, made.gone))
+    eq(' Enter Read (folder gone)' .. ROW_ALL, at(96, made.gone))
     -- With less room the keys stay, and where they are: the summary says
     -- why as well, and so does the mark on the row or the heading above it.
-    eq(' Enter Read' .. rest .. ALWAYS, at(79, made.away))
-    eq(' Enter Read' .. rest .. ALWAYS, at(79, made.gone))
+    eq(' Enter Read' .. ROW, at(79, made.away))
+    eq(' Enter Read' .. ROW, at(79, made.gone))
     eq(' Enter Read | + New  S Search  ? Menu ', at(40, made.away))
   end)
 end)

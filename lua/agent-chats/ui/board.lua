@@ -1,7 +1,7 @@
 -- The board: every chat in one list, with a pane beside it.
 --
 --   +---------------------------------------------+---------------------------+
---   | Enter Open  C Conversation  + New  ? Menu   |                           |
+--   | Enter Open     C Conversation  + New  ? Menu|                           |
 --   | 12 chats · 2 need you                       |  the chat under the       |
 --   |                                             |  cursor: its live         |
 --   | ▾ Needs you  2                              |  terminal when it runs    |
@@ -11,9 +11,9 @@
 --   +---------------------------------------------+---------------------------+
 --
 -- The list is a plain buffer rendered from the index (store.lua). The bar
--- above it is the one place that names keys: at its left what can be done
--- with the row under the cursor, at its right what can be done with the
--- list, and last the way to the menu. The pane follows the cursor while
+-- above it is the one place that names keys: at its left what Enter does
+-- with the row under the cursor, at its right every other key (those of the
+-- row, then those of the list), and last the way to the menu. The pane follows the cursor while
 -- the list has focus; opening a chat or a conversation puts it in the pane
 -- and moves the cursor there, and for as long as it is there the bar names
 -- the keys of that view (the way back, first of all). The pane has no
@@ -1507,31 +1507,36 @@ local function out_of_reach(chat)
   return nil
 end
 
---- The hints for the row under the cursor of `win`: `{ key, label }` each,
---- and a few words on why some are not there, when that needs saying (in
---- full and in short).
----@return table[] hints, string[]? note
+--- The hints for the row under the cursor of `win`, `{ key, label }` each:
+--- what Enter does there, the other keys of the row, and a few words on
+--- why Enter does no more than it does, when that needs saying (in full
+--- and in short).
+---@return table? enter, table[] others, string[]? note
 local function row_hints(win)
   local row = S.rows[api.nvim_win_get_cursor(win)[1]]
-  local out, note = {}, nil
+  local enter, out, note = nil, {}, nil
   local function hint(action, label)
     local key = keys.key(action)
     if key then
       out[#out + 1] = { key, label }
     end
   end
+  local function opens(label)
+    local key = keys.key('open')
+    enter = key and { key, label } or nil
+  end
   if row and row.kind == 'group' then
     -- (Not while a search is on: what it found is shown, folded or not.)
     if not S.search then
-      hint('open', folded(row.group) and 'Unfold' or 'Fold')
+      opens(folded(row.group) and 'Unfold' or 'Fold')
     end
   elseif row and (row.kind == 'more' or row.kind == 'older') then
-    hint('open', 'Show Them')
+    opens('Show Them')
   elseif row and row.kind == 'hit' then
-    hint('open', 'Read This Passage')
+    opens('Read This Passage')
   elseif row and row.chat then
     local chat = row.chat
-    hint('open', (M.open_words(chat)))
+    opens((M.open_words(chat)))
     if not chat.subagent then
       -- Why Enter only reads it, where it does.
       local why = out_of_reach(chat)
@@ -1564,7 +1569,7 @@ local function row_hints(win)
       end
     end
   end
-  return out, note
+  return enter, out, note
 end
 
 --- The hints that are the same on every row, for the right of the bar:
@@ -1637,29 +1642,26 @@ local function pane_hints()
   return nil
 end
 
---- A statusline string for the bar: `left` are the keys of what the cursor
---- is on, with `note` behind the first of them (it says why Enter does no
---- more than it does); `right` the keys that are always there;
---- `menu` the way to everything else, at the right edge.
+--- A statusline string for the bar. `left` is at its left: what Enter
+--- does with what the cursor is on, with `note` behind it (why it does no
+--- more than that). `right` is every other key, and `menu`, the way to
+--- everything else, comes last, at the right edge.
 ---
 --- A hint is `{ key, label }`, with `short` for a label that can be said
 --- in fewer cells and `drop` for when it gives way (the lowest number
 --- first, and of two the later one).
 ---
---- The right side is settled first, with room kept for the left whatever
---- the row under the cursor needs: so the keys that are always there stay
---- where they are as the cursor goes from row to row. `reserve` cells are
---- kept (for the two keys every chat has) while only the key that is
---- needed least has to go for that (2) and long labels to be shortened
---- (3). Where that is not enough, `least` cells are kept (for what Enter
---- does), and then the keys of the list go (6), and last what starts a
---- chat or ends a search (8): on a narrow list a new chat and the search
---- are named before the conversation is. The way to the menu stays.
+--- The right side is settled first, with `least` cells kept for the left
+--- and `reserve` for the other keys of a row, whatever the row under the
+--- cursor has of them: so the keys of the list stay where they are as the
+--- cursor goes from row to row. The key that is needed least goes first
+--- (2), then long labels are shortened (3). Then the other keys of the row
+--- go, the last one first (5), then the keys of the list (6), and last
+--- what starts a chat or ends a search (8). The way to the menu stays.
 ---
 --- The left side has what room that leaves: the note is said in short
---- (1), then not at all (4); then the other keys of the row go, the last
---- one first (5); what Enter does is the last to go (9).
-local function bar_text(width, left, note, right, menu, reserve, least)
+--- (1), then not at all (4); what Enter does is the last to go (9).
+local function bar_text(width, left, note, right, menu, least, reserve)
   local function esc(s)
     return (s:gsub('%%', '%%%%'))
   end
@@ -1716,12 +1718,17 @@ local function bar_text(width, left, note, right, menu, reserve, least)
     end
   end
 
-  local rights = {}
+  -- (`others`: the keys that are there on every row.)
+  local rights, others = {}, {}
   for _, h in ipairs(right) do
     rights[#rights + 1] = { hint = h, shrink = 3, drop = h.drop or 6 }
+    if not h.row then
+      others[#others + 1] = rights[#rights]
+    end
   end
   if menu then
     rights[#rights + 1] = { hint = menu, keep = true }
+    others[#others + 1] = rights[#rights]
   end
   local lefts = {}
   for i, h in ipairs(left) do
@@ -1731,18 +1738,18 @@ local function bar_text(width, left, note, right, menu, reserve, least)
     end
   end
   least = math.max(least or 0, lefts[1] and cells(lefts[1]) or 0)
-  reserve = math.max(reserve or 0, least)
   -- A cell at each edge, and two between the sides where there are two.
-  local function beside(kept)
-    return function()
-      local w = span(rights)
-      return 2 + kept + ((w > 0 and kept > 0) and 2 or 0) + w <= width
-    end
+  local function beside(w)
+    return 2 + least + ((w > 0 and least > 0) and 2 or 0) + w <= width
   end
-  reduce(rights, beside(reserve), 3)
-  if not beside(reserve)() then
-    reduce(rights, beside(least))
+  if (reserve or 0) > 0 then
+    reduce(rights, function()
+      return beside(span(others) + reserve + 2)
+    end, 3)
   end
+  reduce(rights, function()
+    return beside(span(rights))
+  end)
   local right_w = span(rights)
   reduce(lefts, function()
     local w = span(lefts)
@@ -1788,13 +1795,14 @@ update_bar = function()
   local menu_key = keys.key('menu')
   local list_menu = menu_key and { menu_key, 'Menu' } or { config.command('menu'), '' }
   local in_pane, pane_note, pane_menu = pane_hints()
-  -- What the keys every chat has take, kept free at the left on every row:
-  -- the keys at the right do not move as the cursor does.
+  -- What Enter takes on a chat that can be resumed, kept free at the left
+  -- on every row: the keys at the right do not move as the cursor does.
   local open_key, read_key, archive_key = keys.key('open'), keys.key('read'), keys.key('archive')
   local least = open_key and (text.width(open_key) + 7) or 0
-  local reserve = least
-    + (read_key and (text.width(read_key) + 15) or 0)
-    + (archive_key and (text.width(archive_key) + 10) or 0)
+  -- And what the two keys every chat has take, at the right.
+  local reserve = (read_key and (text.width(read_key) + 13) or 0)
+    + (archive_key and (text.width(archive_key) + 8) or 0)
+    + ((read_key and archive_key) and 2 or 0)
   for _, win in ipairs(vim.fn.win_findbuf(S.buf)) do
     local width = api.nvim_win_get_width(win)
     local bar
@@ -1811,7 +1819,7 @@ update_bar = function()
     elseif in_pane then
       bar = bar_text(width, in_pane, pane_note, {}, pane_menu or nil)
     else
-      local hints, note = row_hints(win)
+      local enter, others, note = row_hints(win)
       if S.pane_mode == 'preview' and api.nvim_get_current_win() == S.pane_win and not S.intro then
         -- In the summary the keys are the list's, but for the one that
         -- goes back: there it leads to the list. (With no key of its own
@@ -1824,9 +1832,16 @@ update_bar = function()
             break
           end
         end
-        hints[#hints + 1] = { back, 'Back' }
+        others[#others + 1] = { back, 'Back' }
       end
-      bar = bar_text(width, hints, note, list_hints(), list_menu, reserve, least)
+      -- The other keys of the row are at the right, before those of the
+      -- list: they give way before those do.
+      local right = {}
+      for _, h in ipairs(others) do
+        right[#right + 1] = vim.tbl_extend('keep', { drop = 5, row = true }, h)
+      end
+      vim.list_extend(right, list_hints())
+      bar = bar_text(width, { enter }, note, right, list_menu, least, reserve)
     end
     if vim.wo[win].winbar ~= bar then
       vim.wo[win].winbar = bar

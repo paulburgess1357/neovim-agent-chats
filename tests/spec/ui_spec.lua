@@ -451,7 +451,10 @@ describe('board', function()
     local win = board().menu()
     ok(api.nvim_win_is_valid(win))
     local all = table.concat(menu.lines(), '\n')
-    has(all, 'Enter  Resume it in ' .. vim.fn.fnamemodify(vim.uv.cwd(), ':~'))
+    -- (The folder as a line of a menu has it: a long one without its start.
+    -- How long this one is depends on where the tests are run.)
+    local folder = require('agent-chats.util.fs').short(vim.uv.cwd(), 44)
+    has(all, 'Enter  Resume it in ' .. folder)
     has(all, 'C      Read the conversation')
     -- A reply is typed in the chat itself (Enter goes there): the menu has
     -- no line for it, and none for forking a chat.
@@ -464,7 +467,7 @@ describe('board', function()
     has(all, '── Keep track of it ')
     has(all, '── The list ')
     has(all, '── The board ')
-    hasnt(all, '…')
+    hasnt(all:gsub(vim.pesc(folder), ''), '…')
     -- Only what applies: nothing is queued, and the chat is not busy.
     hasnt(all, 'Queue')
     menu.close()

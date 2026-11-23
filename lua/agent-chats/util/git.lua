@@ -90,6 +90,13 @@ function M.cached(cwd)
   return cache[cwd]
 end
 
+--- Whether an answer is still being waited for (tests: a late one draws
+--- the board again, whichever test asked).
+---@return boolean
+function M.busy()
+  return next(pending) ~= nil
+end
+
 --- Facts for `cwd`, refreshed in the background when older than `M.ttl`.
 --- `cb` runs once fresh facts are in; the return value is whatever is cached now.
 ---@param cwd string

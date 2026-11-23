@@ -2,6 +2,8 @@
 
 One board in Neovim for every AI agent chat on your machine: Claude Code, Codex, Qwen Code and opencode.
 
+![The board: every chat in a list on the left, grouped by what it is doing, and the chat under the cursor in a terminal on the right](assets/board.png)
+
 See which chats need you, which are still working and which have finished. Go into any of them in a Neovim terminal and type, search what was said, and start new ones.
 
 It reads what the agents already write to disk and listens to what they report through their own hooks. Nothing wraps how you start them, so chats started anywhere show up: in a Neovim terminal, in another terminal, by a script.
@@ -33,7 +35,7 @@ Then, once, run `:Chats hooks install` (see [Status hooks](#status-hooks)).
 
 ## Use
 
-`:Chats` opens the board: the list of chats on the left, and the chat under the cursor on the right. The bar above the list names the keys for where you are, and `?` opens a menu with everything else, so nothing has to be remembered.
+`:Chats` opens the board: the list of chats on the left, and the chat under the cursor on the right. The bar above the list names the keys: at its left what `Enter` does with the row you are on, at its right the others. `?` opens a menu with everything else, so nothing has to be remembered.
 
 - `Enter` goes into a chat, and you type there. A chat running in this Neovim is focused, one that ended is resumed in its own folder, and one running somewhere else can only be read.
 - Chats are listed by what they are doing: Needs you, Working, Unread, Idle, Ended. The menu groups them by folder, agent or worktree instead, and puts a chat in a group of your own.
