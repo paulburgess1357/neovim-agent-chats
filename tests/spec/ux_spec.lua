@@ -80,6 +80,8 @@ local ALWAYS = ' | + New Chat  S Search  ? Menu '
 local ALL = ' | + New Chat  S Search  R Refresh  ? Menu '
 local ROW = ' | C Conversation  A Archive  + New Chat  S Search  ? Menu '
 local ROW_ALL = ' | C Conversation  A Archive  + New Chat  S Search  R Refresh  ? Menu '
+-- And on a chat whose terminal is in the pane: its summary can be had there.
+local ROW_OPEN = ' | C Conversation  A Archive  I Info  + New Chat  S Search  ? Menu '
 
 --- What the pane has for a bar of its own: nothing, whatever it shows.
 local function pane_bar()
@@ -466,24 +468,24 @@ describe('the bar above the list', function()
     -- In a terminal of this Neovim: Enter goes to it.
     local _, term = hosted(home, c)
     board().focus()
-    eq(' Enter Open' .. ROW, on(key(c)))
+    eq(' Enter Open' .. ROW_OPEN, on(key(c)))
     local pid = store().get(key(c)).pid
     -- Busy: the same two. (A reply can be queued for it from the menu.)
     home:registry(pid, { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() })
     store().refresh_sync({ full = false })
-    eq(' Enter Open' .. ROW, on(key(c)))
+    eq(' Enter Open' .. ROW_OPEN, on(key(c)))
     -- Asking: Enter goes to answer it.
     home:registry(
       pid,
       { sessionId = c.id, status = 'waiting', waitingFor = 'permission', cwd = vim.uv.cwd() }
     )
     store().refresh_sync({ full = false })
-    eq(' Enter Answer' .. ROW, on(key(c)))
+    eq(' Enter Answer' .. ROW_OPEN, on(key(c)))
     -- With something queued, its row says so; the bar names no key for
     -- what has none.
     state().enqueue(key(c), 'then the docs')
     board().render()
-    eq(' Enter Answer' .. ROW, bar())
+    eq(' Enter Answer' .. ROW_OPEN, bar())
     has(list(), '»1')
     ok(api.nvim_buf_is_valid(term))
 
@@ -524,7 +526,7 @@ describe('the bar above the list', function()
     board().focus()
     board().goto_chat(key(c))
     -- (Nothing to queue behind: the chat is not in the middle of a turn.)
-    eq(' Enter Open' .. ROW, bar())
+    eq(' Enter Open' .. ROW_OPEN, bar())
     home:registry(
       store().get(key(c)).pid,
       { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() }
@@ -539,6 +541,39 @@ describe('the bar above the list', function()
     state().enqueue(key(c), 'then the docs')
     board().render()
     has(bar(), 'Q Queued Replies (1)')
+  end)
+
+  it('names the key for the summary only while nothing has to make room for it', function()
+    local home, made = open(function(h)
+      return {
+        c = chat(h, { title = 'Hosted here', age = 30 }),
+        other = chat(h, { title = 'Another chat', age = 300 }),
+      }
+    end)
+    hosted(home, made.c)
+    board().focus()
+    local win = board()._state.win
+    local function at(width, k)
+      api.nvim_win_set_width(win, width)
+      board().goto_chat(k)
+      board().render()
+      return bar()
+    end
+    local c, other = key(made.c), key(made.other)
+    -- Only a chat whose terminal is in the pane has it.
+    eq(' Enter Open' .. ROW_OPEN, at(80, c))
+    eq(' Enter Resume' .. ROW, at(80, other))
+    -- With less room it is the first to go: every other key is where it
+    -- is on any row, as the cursor goes from one to the next.
+    eq(' Enter Open' .. ROW, at(76, c))
+    eq(' Enter Resume' .. ROW, at(76, other))
+    eq(' Enter Open | C Conversation  A Archive  + New  S Search  ? Menu ', at(68, c))
+    eq(' Enter Resume | C Conversation  A Archive  + New  S Search  ? Menu ', at(68, other))
+    -- On a wide list nothing is in its way.
+    eq(
+      ' Enter Open | C Conversation  A Archive  I Info  + New Chat  S Search  R Refresh  ? Menu ',
+      at(96, c)
+    )
   end)
 
   it('drops hints from the right when narrow, and never the way to the rest', function()
@@ -1277,6 +1312,87 @@ describe('the summary', function()
     state().park(key(c))
     text = table.concat(require('agent-chats.ui.preview').lines(store().get(key(c))), '\n')
     has(text, 'Queued  1 reply, not sent until you send it')
+  end)
+
+  it('takes the place of a terminal in the pane when asked for, on that row', function()
+    local home, made = open(function(h)
+      return {
+        c = chat(h, { title = 'Hosted here', age = 30 }),
+        other = chat(h, { title = 'Another chat', age = 300 }),
+      }
+    end)
+    local S = board()._state
+    local c = made.c
+    local function shown()
+      return api.nvim_win_get_buf(S.pane_win)
+    end
+    -- A chat that is not open has its summary there already: the key says so.
+    board().goto_chat(key(c))
+    has(
+      notes(function()
+        feed('I')
+      end),
+      'The pane shows the summary of this chat already.'
+    )
+    local _, term = hosted(home, c)
+    board().focus()
+    board().goto_chat(key(c))
+    eq(term, shown())
+    -- The key: the summary, which says where the terminal is and how to
+    -- have it back. The cursor stays on the list.
+    feed('I')
+    eq(S.preview_buf, shown())
+    eq(S.win, api.nvim_get_current_win())
+    has(pane(), '# Hosted here')
+    has(pane(), 'Its terminal is behind this summary. I shows it again.')
+    -- (The bar names the key as it did: it is the same key.)
+    has(bar(), 'A Archive  I Info  + New Chat')
+    -- (The list drawn again changes nothing.)
+    board().render()
+    eq(S.preview_buf, shown())
+    -- The menu has the same line, and says what it does now.
+    board().menu()
+    has(table.concat(menu().lines(), '\n'), 'Show its terminal in the pane again')
+    menu().close()
+    -- The key again: the terminal.
+    feed('I')
+    eq(term, shown())
+    has(bar(), 'A Archive  I Info  + New Chat')
+    board().menu()
+    has(
+      table.concat(menu().lines(), '\n'),
+      'Show its summary in the pane, in place of its terminal'
+    )
+    menu().close()
+    -- From inside the summary too: the terminal is back, and the cursor
+    -- on the list.
+    feed('I')
+    api.nvim_set_current_win(S.pane_win)
+    feed('I')
+    eq(term, shown())
+    eq(S.win, api.nvim_get_current_win())
+    -- It is of the row: on another one and back, the terminal is there.
+    feed('I')
+    eq(S.preview_buf, shown())
+    board().goto_chat(key(made.other))
+    board().goto_chat(key(c))
+    eq(term, shown())
+    -- Going into the chat ends it as well.
+    feed('I')
+    eq(S.preview_buf, shown())
+    actions().open(store().get(key(c)))
+    vim.cmd('stopinsert')
+    eq(term, shown())
+    board().focus()
+    eq(term, shown())
+    -- With the pane hidden there is nowhere to show it.
+    board().toggle_pane()
+    has(
+      notes(function()
+        feed('I')
+      end),
+      'The summary is shown in the pane, which is hidden. ? (the menu) shows it.'
+    )
   end)
 end)
 

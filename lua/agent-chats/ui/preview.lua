@@ -255,6 +255,11 @@ local function state_lines(chat, now, tab)
       where,
       config.hint('open', st == 'attention' and ' %s goes there to answer.' or ' %s goes there.')
     )
+  elseif hosted and not chat.subagent then
+    -- The summary was asked for in place of the terminal (the board's
+    -- `info`): said, or the chat would look like one that is not open.
+    out[#out + 1] = '  Its terminal is behind this summary.'
+      .. config.hint('info', ' %s shows it again.')
   end
   if chat.live and not hosted and not chat.subagent then
     if require('agent-chats.term').in_background(chat) then

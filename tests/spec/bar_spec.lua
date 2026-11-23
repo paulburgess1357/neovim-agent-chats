@@ -288,7 +288,7 @@ T.describe('the pane has no bar of its own', function()
       vim.cmd('wincmd h')
       settle()
       eq(S.win, api.nvim_get_current_win())
-      has(bar(), 'Enter Open | C Conversation  A Archive  + New Chat  S Search  ? Menu ')
+      has(bar(), 'Enter Open | C Conversation  A Archive  I Info  + New Chat  S Search  ? Menu ')
       hasnt(bar(), 'Back')
       eq('', pane_bar())
     end

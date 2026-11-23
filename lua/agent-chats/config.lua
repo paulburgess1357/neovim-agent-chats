@@ -187,6 +187,7 @@ M.defaults = {
     search = { 'S', '/' },
     refresh = 'R', -- look for changes now; the list also does so by itself
     archive = 'A', -- put a chat away, under "Archived" at the end; again takes it out
+    info = 'I', -- the summary of a chat in place of its terminal in the pane; again brings the terminal back
     menu = { '?', 'g?', '<RightMouse>' }, -- everything that can be done here
     back = 'q', -- one step back: out of a conversation, a search, the board
     clear = '<Esc>', -- end a search

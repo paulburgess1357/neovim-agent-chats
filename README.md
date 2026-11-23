@@ -66,7 +66,7 @@ The list on the left has every chat, under what it is doing:
 | Idle | Open, nothing new |
 | Ended | Not open anywhere; it can be resumed |
 
-The pane on the right shows the chat under the cursor: its live terminal when it runs in this Neovim, a summary otherwise. `Enter` goes into the chat, and you type there as you would in any terminal. A chat that ended is resumed, in its own folder.
+The pane on the right shows the chat under the cursor: its live terminal when it runs in this Neovim, a summary otherwise (`I` shows the summary of a chat whose terminal is there, and `I` again the terminal). `Enter` goes into the chat, and you type there as you would in any terminal. A chat that ended is resumed, in its own folder.
 
 You do not have to learn any keys. The bar above the list names them: what `Enter` does with the row you are on, then the rest.
 
@@ -74,7 +74,7 @@ You do not have to learn any keys. The bar above the list names them: what `Ente
 
 `?` opens the menu (`g?` if `?` is a key of your own; the bar says which). It lists everything that can be done, in words, and a line that has a key shows it, so the keys are picked up as you go. Choose a line with `Enter` or a click.
 
-- **This chat.** Go into it, read the whole conversation, queue a reply to be sent when the agent finishes its turn, see what changed in its folder.
+- **This chat.** Go into it, read the whole conversation, see its summary in place of its terminal, queue a reply to be sent when the agent finishes its turn, see what changed in its folder.
 - **Keep track of it.** Rename it, pin it to the top of its group, put it in a group of your own, give it labels or a note (the note is shown on its row), mark it read or unread, archive it, copy the command that resumes it.
 - **The list.** Start a new chat, search every chat (inside the conversations too), group the list by folder, agent or worktree, show older chats, mark everything read.
 - **The board.** Hide the pane, refresh, see or set up the status hooks, switch notifications off and on, close the board.

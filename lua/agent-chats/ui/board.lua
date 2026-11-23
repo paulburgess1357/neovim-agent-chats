@@ -89,6 +89,9 @@ local S = {
   pending_pane = false,
   intro = false, ---@type boolean
   intro_row = nil, ---@type (string|boolean)?
+  -- The row whose summary was asked for in place of its live terminal
+  -- (`M.toggle_info`): for as long as the cursor stays on it.
+  info = nil, ---@type string?
   -- The chat under the list's cursor, and the status it was listed under
   -- when the cursor came to it (see `listed_as`). `free`: it goes where
   -- its status puts it all the same (its read mark was set by hand).
@@ -1507,6 +1510,19 @@ local function out_of_reach(chat)
   return nil
 end
 
+--- The terminal of `chat` when the pane is the place for it: it runs in
+--- this Neovim, and no window of the user's shows it. nil for a chat the
+--- pane has the summary of whatever is asked.
+---@return integer?
+local function pane_term(chat)
+  if not (chat and S.pane_on and valid_win(S.pane_win)) then
+    return nil
+  end
+  local terms = require('agent-chats.term')
+  local term = terms.find(chat)
+  return term and not terms.window_of(term) and term or nil
+end
+
 --- The hints for the row under the cursor of `win`, `{ key, label }` each:
 --- what Enter does there, the other keys of the row, and a few words on
 --- why Enter does no more than it does, when that needs saying (in full
@@ -1515,10 +1531,10 @@ end
 local function row_hints(win)
   local row = S.rows[api.nvim_win_get_cursor(win)[1]]
   local enter, out, note = nil, {}, nil
-  local function hint(action, label)
+  local function hint(action, label, more)
     local key = keys.key(action)
     if key then
-      out[#out + 1] = { key, label }
+      out[#out + 1] = vim.tbl_extend('force', { key, label }, more or {})
     end
   end
   local function opens(label)
@@ -1566,6 +1582,15 @@ local function row_hints(win)
       end
       if not chat.unstarted then
         hint('archive', state.is_archived(chat.key, chat.updated) and 'Unarchive' or 'Archive')
+      end
+      -- Its terminal is in the pane: the summary can be had in its place,
+      -- and the terminal again. Only some rows have this key, so it is
+      -- the first to give way: the others stay where they are. (One name
+      -- for both ways: a longer one for the way back would not always
+      -- fit where this one did, and the key would go as it is pressed.
+      -- The summary says how to have the terminal back.)
+      if pane_term(chat) then
+        hint('info', 'Info', { drop = 1 })
       end
     end
   end
@@ -1654,10 +1679,12 @@ end
 --- The right side is settled first, with `least` cells kept for the left
 --- and `reserve` for the other keys of a row, whatever the row under the
 --- cursor has of them: so the keys of the list stay where they are as the
---- cursor goes from row to row. The key that is needed least goes first
---- (2), then long labels are shortened (3). Then the other keys of the row
---- go, the last one first (5), then the keys of the list (6), and last
---- what starts a chat or ends a search (8). The way to the menu stays.
+--- cursor goes from row to row. A key that only some rows have is there
+--- while nothing has to make room for it (1). The key that is needed least
+--- goes first (2), then long labels are shortened (3). Then the other keys
+--- of the row go, the last one first (5), then the keys of the list (6),
+--- and last what starts a chat or ends a search (8). The way to the menu
+--- stays.
 ---
 --- The left side has what room that leaves: the note is said in short
 --- (1), then not at all (4); what Enter does is the last to go (9).
@@ -1743,7 +1770,9 @@ local function bar_text(width, left, note, right, menu, least, reserve)
     return 2 + least + ((w > 0 and least > 0) and 2 or 0) + w <= width
   end
   if (reserve or 0) > 0 then
-    reduce(rights, function()
+    -- (Of the keys that are there on every row: what a row adds to them
+    -- has no say in where they stand.)
+    reduce(others, function()
       return beside(span(others) + reserve + 2)
     end, 3)
   end
@@ -1838,7 +1867,7 @@ update_bar = function()
       -- list: they give way before those do.
       local right = {}
       for _, h in ipairs(others) do
-        right[#right + 1] = vim.tbl_extend('keep', { drop = 5, row = true }, h)
+        right[#right + 1] = vim.tbl_extend('keep', { drop = h.drop or 5, row = true }, h)
       end
       vim.list_extend(right, list_hints())
       bar = bar_text(width, { enter }, note, right, list_menu, least, reserve)
@@ -2183,6 +2212,14 @@ local function show_row()
     prepare_terminal(term)
     term = nil
   end
+  -- The summary was asked for in place of the terminal (`M.toggle_info`):
+  -- for that row, and until the cursor leaves it.
+  if S.info and S.info ~= (row and row.id) then
+    S.info = nil
+  end
+  if S.info then
+    term = nil
+  end
   S.pane_hints_fn = nil
   -- What the pane is about. While that stays the same a refresh must not
   -- move the pane's view: the user may have scrolled it.
@@ -2326,8 +2363,10 @@ function M.pane_show(buf, mode, hints)
   window_keys(buf)
   S.pane_shown = nil
   -- Whatever is put in the pane is what the user asked for: the
-  -- introduction has had its turn.
+  -- introduction has had its turn, and so has a summary that was asked
+  -- for in place of a terminal.
   S.intro = false
+  S.info = nil
   S.pane_hints_fn = type(hints) == 'function' and hints or nil
   if mode == 'term' then
     prepare_terminal(buf)
@@ -2423,6 +2462,41 @@ function M.focus()
     update_bar()
     update_pane()
   end
+end
+
+--- Show the summary of the chat under the cursor in place of its live
+--- terminal, or the terminal again. For that row, and for as long as the
+--- cursor stays on it: every other row shows what it always shows, and so
+--- does this one when the cursor comes back to it.
+---@param chat agent_chats.Chat?  The chat under the cursor when nil.
+---@param row agent_chats.Row?
+function M.toggle_info(chat, row)
+  if not (chat and row) then
+    chat, row = M.current()
+  end
+  if not (chat and row) then
+    return
+  end
+  if not (S.pane_on and valid_win(S.pane_win)) then
+    return info(
+      ('The summary is shown in the pane, which is hidden. %s shows it.'):format(keys.reach('pane'))
+    )
+  end
+  if not pane_term(chat) then
+    -- Nothing to take the place of: no terminal here, or it is on screen
+    -- in a window of its own.
+    return info('The pane shows the summary of this chat already.')
+  end
+  S.intro = false
+  S.info = S.info ~= row.id and row.id or nil
+  if api.nvim_get_current_win() == S.pane_win then
+    -- Pressed in the summary: the terminal comes back with the cursor on
+    -- the list, as it is shown for any other row. (Going into it is what
+    -- the key that opens a chat is for.)
+    return M.focus()
+  end
+  show_row()
+  update_bar()
 end
 
 function M.toggle_pane()
@@ -2729,6 +2803,7 @@ local DESCRIPTIONS = {
   note = 'edit the note of the chat',
   unread = 'mark the chat read or unread',
   archive = 'archive the chat',
+  info = "show the chat's summary in place of its terminal, or the terminal again",
   yank = 'copy the command that resumes the chat',
   group = 'group by status, folder, agent or worktree',
   pane = 'show or hide the pane',
@@ -2852,6 +2927,7 @@ local function handlers()
       end)
     end, 'move'),
     archive = on_chat(actions.archive, 'archive'),
+    info = on_chat(M.toggle_info, 'show the summary of'),
     show_all = M.toggle_show_all,
     label = on_chat(actions.labels, 'label'),
     note = on_chat(actions.note, 'put a note on'),
@@ -2967,6 +3043,13 @@ function M.menu_items(ctx)
     end
     if not chat.stub and not ctx.view and not elsewhere and startable(chat) then
       item('read', 'Read the conversation')
+    end
+    if not ctx.view and pane_term(chat) then
+      item(
+        'info',
+        S.info == (row and row.id) and 'Show its terminal in the pane again'
+          or 'Show its summary in the pane, in place of its terminal'
+      )
     end
     if queued > 0 then
       item('queue', ('Queued replies (%d): send, add or drop'):format(queued))
