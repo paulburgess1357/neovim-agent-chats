@@ -368,10 +368,11 @@ describe('regressions', function()
       },
       running = false,
     })
-    -- An archived chat is out of sight on the plain board; a search looks
-    -- everywhere, shows it, and says that it is archived.
+    -- An archived chat is under a folded heading on the plain board; a
+    -- search looks everywhere and shows it, under that heading.
     has(list(), '1 chat · 1 passage')
-    has(list(), 'Fix the parser archived')
+    has(list(), '▾ Archived  1')
+    has(list(), 'Fix the parser')
     hasnt(list(), 'a zebra here')
   end)
 

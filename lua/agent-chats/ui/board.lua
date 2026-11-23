@@ -45,6 +45,8 @@ local GROUP_MODES = { 'status', 'folder', 'agent', 'worktree' }
 local FILTERED = 'filtered'
 -- The group of the chats whose folder is no longer there (by status).
 local GONE = 'status:gone'
+-- The group of the chats that were archived.
+local ARCHIVED = 'archived'
 -- How long typing has to pause before the conversations are read too (ms).
 M._search_delay = 250
 -- The introduction is shown once; raising this shows it once more.
@@ -75,7 +77,7 @@ local S = {
   group_by = nil, ---@type string?
   expanded = {}, ---@type table<string, boolean>
   full = {}, ---@type table<string, boolean>
-  show_archived = false,
+  show_older = false,
   -- The search that is on: its text, the passages found inside
   -- conversations so far (by chat), and whether those are still being read.
   search = nil, ---@type { query: string, hits: table<string, agent_chats.Hit[]>, running: boolean, read: boolean?, fresh: boolean? }?
@@ -134,20 +136,20 @@ function M.buf()
   return M.is_open() and S.buf or nil
 end
 
---- Whether the group `id` is folded. The chats that are filtered out, and
---- those that cannot be resumed because their folder is gone, are out of
---- the way until they are asked for: folded until unfolded, where every
---- other group is open until it is folded.
+--- Whether the group `id` is folded. The chats that are archived, those
+--- that are filtered out, and those that cannot be resumed because their
+--- folder is gone, are out of the way until they are asked for: folded
+--- until unfolded, where every other group is open until it is folded.
 ---@return boolean
 local function folded(id)
-  if id == FILTERED or id == GONE then
+  if id == ARCHIVED or id == FILTERED or id == GONE then
     return not state.collapsed(id .. ':open')
   end
   return state.collapsed(id)
 end
 
 local function set_folded(id, value)
-  if id == FILTERED or id == GONE then
+  if id == ARCHIVED or id == FILTERED or id == GONE then
     return state.set_collapsed(id .. ':open', not value)
   end
   state.set_collapsed(id, value)
@@ -193,8 +195,8 @@ local function visible_chats()
   local search = S.search
   local terms = search and vim.split(search.query:lower(), '%s+', { trimempty = true }) or {}
   local out = {}
-  -- A search looks at every chat there is, the archived ones too.
-  for _, chat in ipairs(store.list({ archived = S.show_archived or search ~= nil })) do
+  -- The archived ones too: they are under a heading of their own.
+  for _, chat in ipairs(store.list({ archived = true })) do
     if not search or matches(chat, terms) or search.hits[chat.key] ~= nil then
       out[#out + 1] = chat
     end
@@ -348,7 +350,15 @@ local function build_groups(chats)
 
   for _, chat in ipairs(chats) do
     local g
-    if config.filtered(chat.cwd) then
+    if state.is_archived(chat.key, chat.updated) then
+      -- Put away by hand: it is with the others of that kind, at the very
+      -- end, however the list is grouped and whatever else holds for it.
+      g = group(ARCHIVED, 'Archived', 'AgentChatsGroup')
+      g.id, g.archived = ARCHIVED, true
+      local key = keys.key('archive')
+      g.about = key and ('%s takes a chat out again'):format(key) or 'put away by you'
+      g.about_short = 'put away'
+    elseif config.filtered(chat.cwd) then
       -- Its folder is filtered out in the options: it is with the others
       -- of that kind, however the list is grouped and whatever group of
       -- yours it was put in.
@@ -423,12 +433,13 @@ local function build_groups(chats)
     g.latest = math.max(g.latest, chat.updated or 0)
   end
 
-  -- What is filtered out comes last, however the rest is ordered.
-  local aside = by[FILTERED]
-  if aside then
+  -- What is filtered out comes after everything else, however that is
+  -- ordered, and what is archived last of all.
+  local aside = {}
+  for _, id in ipairs({ FILTERED, ARCHIVED }) do
     for i, g in ipairs(order) do
-      if g == aside then
-        table.remove(order, i)
+      if g == by[id] then
+        aside[#aside + 1] = table.remove(order, i)
         break
       end
     end
@@ -493,12 +504,10 @@ local function build_groups(chats)
       return a.latest > b.latest
     end)
   end
-  if aside then
-    order[#order + 1] = aside
-  end
+  vim.list_extend(order, aside)
   for _, g in ipairs(order) do
     -- (A group of chats in every state: what needs you first.)
-    table.sort(g.chats, (g.own or g.filtered) and own_order or chat_order)
+    table.sort(g.chats, (g.own or g.filtered or g.archived) and own_order or chat_order)
   end
   return order
 end
@@ -594,10 +603,6 @@ local function chat_line(chat, depth, cols, width, now)
     end
     if chat.live and not chat.term then
       mark(' ' .. icons.elsewhere, 'AgentChatsDim', 2)
-    end
-    -- Out of sight on the plain board; a search finds it all the same.
-    if state.is_archived(chat.key, chat.updated) then
-      mark(' archived', 'AgentChatsDim', 4)
     end
     -- Last: what the note says goes on behind its mark.
     if note then
@@ -698,11 +703,12 @@ end
 local function header_line(chats, width)
   -- The numbers are those of the rows below: with a search on, of what
   -- the search left.
-  -- Not those that are filtered out: they are under a heading of their own,
-  -- with their number. (What a search found is counted whole.)
+  -- Not those that are archived or filtered out: they are under a heading
+  -- of their own, with their number. (What a search found is counted whole.)
   local c, total = { attention = 0, working = 0, done = 0 }, 0
   for _, chat in ipairs(chats) do
-    if S.search or not config.filtered(chat.cwd) then
+    local aside = config.filtered(chat.cwd) or state.is_archived(chat.key, chat.updated)
+    if S.search or not aside then
       total = total + 1
       if c[chat.status] then
         c[chat.status] = c[chat.status] + 1
@@ -789,7 +795,7 @@ local function header_line(chats, width)
     count(c.done, ('%d unread'):format(c.done), icons.done, 'AgentChatsDone')
     lefts = { words, glyphs }
     local grouped = S.group_by ~= 'status' and ('by ' .. S.group_by) or nil
-    local older = S.show_archived and 'older and archived shown' or nil
+    local older = S.show_older and 'older chats shown' or nil
     rights = { side(grouped, older), side(grouped), Line() }
     -- A note goes before the counts go from words to marks: the headings
     -- below say how the list is arranged as well.
@@ -1029,18 +1035,6 @@ local function empty_state()
           config.key('open') or config.command('menu'),
           store.older,
           store.older == 1 and '' or 's'
-        ),
-        hint('new', '%s starts a new chat.')
-      ),
-    }
-  end
-  if not S.show_archived and #store.list({ archived = true }) > 0 then
-    return {
-      'Every chat is archived.',
-      '',
-      sentences(
-        ('%s shows them: “Show older and archived chats”.'):format(
-          config.key('menu') or config.command('menu')
         ),
         hint('new', '%s starts a new chat.')
       ),
@@ -1309,9 +1303,15 @@ function M.render()
     if explain and g[explain] then
       add(l, '   ' .. g[explain], 'AgentChatsDim')
     end
-    local heading =
-      push(l, { kind = 'group', group = g.id, own = g.own, filtered = g.filtered, gone = g.gone })
-    if (S.group_by ~= 'status' or g.own) and not g.filtered then
+    local heading = push(l, {
+      kind = 'group',
+      group = g.id,
+      own = g.own,
+      filtered = g.filtered,
+      gone = g.gone,
+      archived = g.archived,
+    })
+    if (S.group_by ~= 'status' or g.own) and not g.filtered and not g.archived then
       -- A folder or an agent, which may be what was searched for.
       mark_terms(heading)
     end
@@ -1559,6 +1559,9 @@ local function row_hints(win)
       if not chat.stub then
         hint('read', 'Conversation')
       end
+      if not chat.unstarted then
+        hint('archive', state.is_archived(chat.key, chat.updated) and 'Unarchive' or 'Archive')
+      end
     end
   end
   return out, note
@@ -1635,7 +1638,8 @@ local function pane_hints()
 end
 
 --- A statusline string for the bar: `left` are the keys of what the cursor
---- is on, with `note` after them; `right` the keys that are always there;
+--- is on, with `note` behind the first of them (it says why Enter does no
+--- more than it does); `right` the keys that are always there;
 --- `menu` the way to everything else, at the right edge.
 ---
 --- A hint is `{ key, label }`, with `short` for a label that can be said
@@ -1674,8 +1678,8 @@ local function bar_text(width, left, note, right, menu, reserve, least)
     local w = 0
     for _, part in ipairs(parts) do
       if not part.gone then
-        -- (A note stands a little apart from the keys.)
-        w = w + cells(part) + (w > 0 and (part.note and 3 or 2) or 0)
+        -- (A note belongs to the key before it.)
+        w = w + cells(part) + (w > 0 and (part.note and 1 or 2) or 0)
       end
     end
     return w
@@ -1722,12 +1726,12 @@ local function bar_text(width, left, note, right, menu, reserve, least)
   local lefts = {}
   for i, h in ipairs(left) do
     lefts[#lefts + 1] = { hint = h, shrink = 3, drop = h.drop or (i == 1 and 9 or 5) }
+    if i == 1 and note then
+      lefts[#lefts + 1] = { note = note, at = 1, shrink = 1, drop = 4 }
+    end
   end
   least = math.max(least or 0, lefts[1] and cells(lefts[1]) or 0)
   reserve = math.max(reserve or 0, least)
-  if note then
-    lefts[#lefts + 1] = { note = note, at = 1, shrink = 1, drop = 4 }
-  end
   -- A cell at each edge, and two between the sides where there are two.
   local function beside(kept)
     return function()
@@ -1751,7 +1755,7 @@ local function bar_text(width, left, note, right, menu, reserve, least)
     for _, part in ipairs(parts) do
       if not part.gone and part.note then
         out[#out + 1] = ('%s%%#AgentChatsDim#(%s)%%*'):format(
-          any and '   ' or '',
+          any and ' ' or '',
           esc(part.note[part.at])
         )
         any = true
@@ -1784,11 +1788,13 @@ update_bar = function()
   local menu_key = keys.key('menu')
   local list_menu = menu_key and { menu_key, 'Menu' } or { config.command('menu'), '' }
   local in_pane, pane_note, pane_menu = pane_hints()
-  -- What the two keys every chat has take, kept free at the left on every
-  -- row: the keys at the right do not move as the cursor does.
-  local open_key, read_key = keys.key('open'), keys.key('read')
+  -- What the keys every chat has take, kept free at the left on every row:
+  -- the keys at the right do not move as the cursor does.
+  local open_key, read_key, archive_key = keys.key('open'), keys.key('read'), keys.key('archive')
   local least = open_key and (text.width(open_key) + 7) or 0
-  local reserve = least + (read_key and (text.width(read_key) + 15) or 0)
+  local reserve = least
+    + (read_key and (text.width(read_key) + 15) or 0)
+    + (archive_key and (text.width(archive_key) + 10) or 0)
   for _, win in ipairs(vim.fn.win_findbuf(S.buf)) do
     local width = api.nvim_win_get_width(win)
     local bar
@@ -2374,6 +2380,16 @@ function M.release(buf)
   return false
 end
 
+--- Whether the cursor is on the list, or in the summary beside it: where
+--- what a key did to a chat is seen at once, on its row.
+function M.on_list()
+  if not M.is_open() then
+    return false
+  end
+  local win = api.nvim_get_current_win()
+  return win == S.win or (win == S.pane_win and S.pane_mode == 'preview')
+end
+
 --- Whether the cursor is in the board (its list or its pane).
 function M.has_focus()
   local win = api.nvim_get_current_win()
@@ -2651,8 +2667,8 @@ function M.toggle_row()
 end
 
 function M.toggle_show_all()
-  local on = not (store.show_all and S.show_archived)
-  S.show_archived = on
+  local on = not (store.show_all and S.show_older)
+  S.show_older = on
   store.set_show_all(on)
   M.render()
 end
@@ -2701,7 +2717,7 @@ local DESCRIPTIONS = {
   yank = 'copy the command that resumes the chat',
   group = 'group by status, folder, agent or worktree',
   pane = 'show or hide the pane',
-  show_all = 'show older and archived chats',
+  show_all = 'show older chats',
   read_all = 'mark every chat read',
   scroll_down = 'scroll the pane down',
   scroll_up = 'scroll the pane up',
@@ -2969,8 +2985,8 @@ function M.menu_items(ctx)
       end
       item(
         'archive',
-        state.is_archived(chat.key, chat.updated) and 'Unarchive'
-          or 'Archive (hide it until it is active again)'
+        state.is_archived(chat.key, chat.updated) and 'Unarchive it'
+          or 'Archive it: out of the way, at the end of the list'
       )
       item('yank', 'Copy the command that resumes it')
     end
@@ -3023,10 +3039,7 @@ function M.menu_items(ctx)
       end)
     end
   end
-  item(
-    'show_all',
-    S.show_archived and 'Hide older and archived chats' or 'Show older and archived chats'
-  )
+  item('show_all', S.show_older and 'Hide older chats' or 'Show older chats')
   if store.counts().done > 0 then
     item('read_all', 'Mark every chat read')
   end
@@ -3482,7 +3495,7 @@ local function open_board(opts)
     S.group_by = 'agent'
   end
   S.search = nil
-  S.show_archived = store.show_all
+  S.show_older = store.show_all
   S.pane_on = cfg.board.pane
   S.intro = cfg.board.intro ~= false and state.intro() < INTRO
   S.intro_row = nil

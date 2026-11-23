@@ -73,9 +73,11 @@ local function bar(win)
   return (raw:gsub('%%#%w+#', ''):gsub('%%%*', ''):gsub('%%=', ' | '))
 end
 
--- The right of the bar on a list of ordinary width: the keys that are there
--- on every row.
-local ALWAYS = ' | + New Chat  S Search  R Refresh  ? Menu '
+-- The right of the bar: the keys that are there on every row. On a list of
+-- ordinary width, where the keys of a row have their room first; and on a
+-- wide one, all of them.
+local ALWAYS = ' | + New Chat  S Search  ? Menu '
+local ALL = ' | + New Chat  S Search  R Refresh  ? Menu '
 
 --- What the pane has for a bar of its own: nothing, whatever it shows.
 local function pane_bar()
@@ -451,36 +453,36 @@ describe('the bar above the list', function()
 
     -- An ended chat: Enter resumes it, and what is said to it is typed there.
     -- (At the right, the keys that are there on every row.)
-    local always = ' | + New Chat  S Search  R Refresh  ? Menu '
-    eq(' Enter Resume  C Conversation' .. always, on(key(c)))
+    local always = ALWAYS
+    eq(' Enter Resume  C Conversation  A Archive' .. always, on(key(c)))
     -- One whose folder is gone can only be read. (The key for the
     -- conversation is named all the same: it is where it is on every chat.
     -- Why Enter only reads it is said where there is room: see below.)
-    eq(' Enter Read  C Conversation' .. always, on(key(made.gone)))
+    eq(' Enter Read  C Conversation  A Archive' .. always, on(key(made.gone)))
     -- So can one that runs outside this Neovim.
-    eq(' Enter Read  C Conversation' .. always, on(key(made.away)))
+    eq(' Enter Read  C Conversation  A Archive' .. always, on(key(made.away)))
 
     -- In a terminal of this Neovim: Enter goes to it.
     local _, term = hosted(home, c)
     board().focus()
-    eq(' Enter Open  C Conversation' .. ALWAYS, on(key(c)))
+    eq(' Enter Open  C Conversation  A Archive' .. ALWAYS, on(key(c)))
     local pid = store().get(key(c)).pid
     -- Busy: the same two. (A reply can be queued for it from the menu.)
     home:registry(pid, { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() })
     store().refresh_sync({ full = false })
-    eq(' Enter Open  C Conversation' .. ALWAYS, on(key(c)))
+    eq(' Enter Open  C Conversation  A Archive' .. ALWAYS, on(key(c)))
     -- Asking: Enter goes to answer it.
     home:registry(
       pid,
       { sessionId = c.id, status = 'waiting', waitingFor = 'permission', cwd = vim.uv.cwd() }
     )
     store().refresh_sync({ full = false })
-    eq(' Enter Answer  C Conversation' .. ALWAYS, on(key(c)))
+    eq(' Enter Answer  C Conversation  A Archive' .. ALWAYS, on(key(c)))
     -- With something queued, its row says so; the bar names no key for
     -- what has none.
     state().enqueue(key(c), 'then the docs')
     board().render()
-    eq(' Enter Answer  C Conversation' .. ALWAYS, bar())
+    eq(' Enter Answer  C Conversation  A Archive' .. ALWAYS, bar())
     has(list(), '»1')
     ok(api.nvim_buf_is_valid(term))
 
@@ -521,18 +523,18 @@ describe('the bar above the list', function()
     board().focus()
     board().goto_chat(key(c))
     -- (Nothing to queue behind: the chat is not in the middle of a turn.)
-    eq(' Enter Open  C Conversation' .. ALWAYS, bar())
+    eq(' Enter Open  C Conversation  A Archive' .. ALWAYS, bar())
     home:registry(
       store().get(key(c)).pid,
       { sessionId = c.id, status = 'busy', cwd = vim.uv.cwd() }
     )
     store().refresh_sync({ full = false })
     board().render()
-    -- (Beside the keys that are always there, the row has room for two.)
-    has(bar(), 'Enter Open  Q Queue a Reply | + New Chat')
+    -- (Beside the keys that are always there, the row has room for three.)
+    has(bar(), 'Enter Open  Q Queue a Reply  C Conversation | + New Chat')
     api.nvim_win_set_width(board()._state.win, 100)
     board().render()
-    has(bar(), 'Enter Open  Q Queue a Reply  C Conversation | + New Chat')
+    has(bar(), 'Enter Open  Q Queue a Reply  C Conversation  A Archive | + New Chat')
     state().enqueue(key(c), 'then the docs')
     board().render()
     has(bar(), 'Q Queued Replies (1)')
@@ -549,10 +551,13 @@ describe('the bar above the list', function()
       return bar()
     end
     -- The key that is needed least goes first, and a long label is
-    -- shortened; then the conversation gives way to a new chat and the
-    -- search; then those go, and last what Enter does.
-    eq(' Enter Resume  C Conversation | + New Chat  S Search  R Refresh  ? Menu ', at(76))
-    eq(' Enter Resume  C Conversation | + New Chat  S Search  ? Menu ', at(64))
+    -- shortened; then the keys of the row give way to a new chat and the
+    -- search, the last of them first; then those go, and last what Enter
+    -- does.
+    local row = ' Enter Resume  C Conversation  A Archive'
+    eq(row .. ' | + New Chat  S Search  R Refresh  ? Menu ', at(84))
+    eq(row .. ' | + New Chat  S Search  ? Menu ', at(76))
+    eq(row .. ' | + New  S Search  ? Menu ', at(68))
     eq(' Enter Resume  C Conversation | + New  S Search  ? Menu ', at(56))
     eq(' Enter Resume | + New  S Search  ? Menu ', at(48))
     eq(' Enter Resume | + New  S Search  ? Menu ', at(39))
@@ -560,7 +565,7 @@ describe('the bar above the list', function()
     eq(' Enter Resume | ? Menu ', at(24))
     eq('  | ? Menu ', at(12))
     -- What is shown fits.
-    for _, width in ipairs({ 76, 64, 56, 48, 39, 30, 24, 12 }) do
+    for _, width in ipairs({ 84, 76, 68, 56, 48, 39, 30, 24, 12 }) do
       local shown = at(width):gsub(' | ', '  ')
       ok(vim.fn.strdisplaywidth(shown) <= width, ('%d: %s'):format(width, shown))
     end
@@ -570,7 +575,7 @@ describe('the bar above the list', function()
     open(function(h)
       chat(h)
     end, { keys = { menu = false } })
-    has(bar(), 'R Refresh  :Chats menu ')
+    has(bar(), 'S Search  :Chats menu ')
     vim.cmd('runtime plugin/agent-chats.lua')
     vim.cmd('Chats menu')
     ok(menu().is_open())
@@ -675,11 +680,11 @@ describe('the menu', function()
     ok(at['Group by folder'] < at['The board'])
     ok(at['The board'] < at['Turn notifications'])
     eq(#lines, at['Close the board'])
-    has(all, 'Show older and archived chats')
+    has(all, 'Show older chats')
     has(all, 'Status hooks of the agents: see or set up')
     has(all, 'Pin to the top of its group')
     has(all, 'Mark unread')
-    has(all, 'Archive (hide it until it is active again)')
+    has(all, 'Archive it: out of the way, at the end of the list')
     has(all, 'Copy the command that resumes it')
     hasnt(all, 'Group by status')
     -- A heading is a rule with its words in it, and no choice.
@@ -1911,7 +1916,8 @@ describe('keys: one key, one action', function()
     has(vim.fn.maparg('<CR>', 'n', false, true).desc, 'archive the chat')
     eq(nil, keys().key('pin'))
     eq(nil, keys().key('open'))
-    hasnt(bar(), 'Enter')
+    hasnt(bar(), 'Enter Resume')
+    has(bar(), 'Enter Archive')
   end)
 
   it('says once, of an old and a new name both given, which is read', function()
@@ -2784,13 +2790,13 @@ describe('the summary, when the cursor ends up in it', function()
     eq(S.pane_win, api.nvim_get_current_win())
     -- The keys there are the list's, on the chat it shows; the one that
     -- goes back is named with them.
-    eq(' Enter Resume  C Conversation  q Back' .. ALWAYS, bar())
+    eq(' Enter Resume  C Conversation  A Archive  q Back' .. ALWAYS, bar())
     eq('', pane_bar())
     feed('q')
     eq(S.win, api.nvim_get_current_win())
     ok(board().is_open(), 'back is one step: to the list, not out of the board')
     vim.wait(30)
-    eq(' Enter Resume  C Conversation' .. ALWAYS, bar())
+    eq(' Enter Resume  C Conversation  A Archive' .. ALWAYS, bar())
   end)
 
   it('leaves the key to you there too, and then names the command', function()
@@ -2802,7 +2808,7 @@ describe('the summary, when the cursor ends up in it', function()
     no(vim.fn.maparg('q', 'n', false, true).buffer == 1)
     api.nvim_win_set_width(board()._state.win, 100)
     board().summary_entered()
-    eq(' Enter Resume  C Conversation  :Chats Back' .. ALWAYS, bar())
+    eq(' Enter Resume  C Conversation  A Archive  :Chats Back' .. ALL, bar())
   end)
 end)
 
@@ -3005,14 +3011,16 @@ describe('the bar: why Enter only reads a chat', function()
       board().render()
       return bar()
     end
-    eq(' Enter Read  C Conversation   (it runs outside this Neovim)' .. ALWAYS, at(104, made.away))
-    eq(' Enter Read  C Conversation   (runs elsewhere)' .. ALWAYS, at(90, made.away))
-    eq(' Enter Read  C Conversation   (its folder is gone)' .. ALWAYS, at(94, made.gone))
-    eq(' Enter Read  C Conversation   (folder gone)' .. ALWAYS, at(88, made.gone))
+    -- (Behind what Enter does: that is what it is about.)
+    local rest = '  C Conversation  A Archive'
+    eq(' Enter Read (it runs outside this Neovim)' .. rest .. ALL, at(112, made.away))
+    eq(' Enter Read (runs elsewhere)' .. rest .. ALL, at(98, made.away))
+    eq(' Enter Read (its folder is gone)' .. rest .. ALL, at(102, made.gone))
+    eq(' Enter Read (folder gone)' .. rest .. ALL, at(96, made.gone))
     -- With less room the keys stay, and where they are: the summary says
     -- why as well, and so does the mark on the row or the heading above it.
-    eq(' Enter Read  C Conversation' .. ALWAYS, at(79, made.away))
-    eq(' Enter Read  C Conversation' .. ALWAYS, at(79, made.gone))
+    eq(' Enter Read' .. rest .. ALWAYS, at(79, made.away))
+    eq(' Enter Read' .. rest .. ALWAYS, at(79, made.gone))
     eq(' Enter Read | + New  S Search  ? Menu ', at(40, made.away))
   end)
 end)
@@ -3345,10 +3353,9 @@ describe('a reply that is being answered in the background', function()
     board().goto_chat(key(c))
     board().render()
     local S = board()._state
-    api.nvim_win_set_width(S.win, 104)
+    api.nvim_win_set_width(S.win, 112)
     board().render()
-    has(bar(), 'Enter Read')
-    has(bar(), '(answering in the background)')
+    has(bar(), 'Enter Read (answering in the background)')
     hasnt(bar():lower(), 'queue')
     has(pane():gsub('\n%s*', ' '), 'A reply sent from here is being answered in the background')
     hasnt(pane(), 'type in its own terminal')

@@ -69,6 +69,7 @@ local function guide(width)
     { 'new', 'New Chat: pick the agent, and it opens' },
     { 'search', 'Search: every chat, inside the conversations too' },
     { 'refresh', 'Refresh: look for changes now (the list also does so by itself)' },
+    { 'archive', 'Archive: put a chat away, at the end of the list (again takes it out)' },
     { 'notify', 'Notifications: on or off' },
     { 'back', 'Back: out of a conversation, a search, the board' },
     { 'menu', 'Menu: everything else, for this chat and for the board' },
@@ -246,6 +247,9 @@ local function state_lines(chat, now, tab)
         .. config.hint('open', ' %s reads it.')
     end
   end
+  if not chat.subagent and state.is_archived(chat.key, chat.updated) then
+    out[#out + 1] = '  Archived' .. config.hint('archive', ': %s takes it out again') .. '.'
+  end
   if where then
     out[#out + 1] = ('  Its terminal is open %s.%s'):format(
       where,
@@ -402,6 +406,17 @@ function M.lines(chat, row, rows, width, tab)
           )
         )
         say('Take a folder out of filter_out, and its chats are back among the others.')
+      elseif row.archived then
+        local key = keys.key('archive')
+        say(
+          'Chats you archived. They are left out of the counts above the list, and a search still finds them.'
+        )
+        say(
+          (
+            key and ('%s on one of them takes it out again'):format(key)
+            or 'The menu of one of them takes it out again'
+          ) .. ', and one that moves again (a new turn) comes back by itself.'
+        )
       elseif row.gone then
         -- The other one: why these are apart from "Ended".
         say(

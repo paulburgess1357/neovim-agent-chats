@@ -333,15 +333,17 @@ describe('board', function()
     hasnt(list(), 'Unread  ')
   end)
 
-  it('archives a chat out of sight and shows it again on request', function()
+  it('archives a chat out of sight, under a heading at the end', function()
     local _, c = open(function(home)
       return chat(home, { title = 'Fix the parser' })
     end)
     actions().archive(store().get(key(c)))
     hasnt(list(), 'Fix the parser')
-    board()._state.show_archived = true
-    board().render()
+    has(list(), '▸ Archived  1')
+    -- Again takes it out.
+    actions().archive(store().get(key(c)))
     has(list(), 'Fix the parser')
+    hasnt(list(), 'Archived')
   end)
 
   it("renames a chat without touching the agent's title", function()
@@ -405,7 +407,8 @@ describe('board', function()
         s.archived[key(c)] = os.time() + 10
       end)
     end)
-    has(list(), 'Every chat is archived.')
+    has(list(), '0 chats')
+    has(list(), '▸ Archived  1')
   end)
 
   it('works as a floating window too', function()

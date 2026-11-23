@@ -1709,14 +1709,15 @@ describe('review: the bar', function()
       board().render()
       return bar()
     end
-    -- After the keys of the row, and in short before a key at the right
-    -- would have to move: those are where they are on every row.
-    local always = ' | + New Chat  S Search  R Refresh  ? Menu '
-    eq(' Enter Read  C Conversation   (it runs outside this Neovim)' .. always, at(104))
-    eq(' Enter Read  C Conversation   (runs elsewhere)' .. always, at(90))
+    -- Behind what Enter does, and in short before a key at the right would
+    -- have to move: those are where they are on every row.
+    local rest = '  C Conversation  A Archive'
+    local all = ' | + New Chat  S Search  R Refresh  ? Menu '
+    eq(' Enter Read (it runs outside this Neovim)' .. rest .. all, at(112))
+    eq(' Enter Read (runs elsewhere)' .. rest .. all, at(98))
     -- With less room the keys stay: the mark on the row and the summary
     -- say the same.
-    eq(' Enter Read  C Conversation' .. always, at(80))
+    eq(' Enter Read' .. rest .. ' | + New Chat  S Search  ? Menu ', at(80))
     eq(' Enter Read  C Conversation | + New  S Search  ? Menu ', at(58))
     has(list(), '↗')
     home:unregister(uv.os_getpid())

@@ -12,13 +12,6 @@ end
 
 local root = vim.fn.fnamemodify(debug.getinfo(1, 'S').source:sub(2), ':p:h:h:h')
 
---- The first Lua block under a heading of the README.
-local function readme_example(heading)
-  local text = table.concat(vim.fn.readfile(root .. '/README.md'), '\n')
-  local from = assert(text:find('\n## ' .. heading, 1, true), 'no such heading: ' .. heading)
-  return assert(text:match('```lua\n(.-)\n```', from), 'no lua block under ' .. heading)
-end
-
 --- A provider with only what the contract requires. `extra` adds to it.
 local function minimal(extra)
   local now = os.time()
@@ -172,7 +165,7 @@ describe('a provider from outside', function()
     eq('Second name', store().get('demo:one').title)
   end)
 
-  it('runs the example the README gives', function()
+  it('runs the example the repository gives (examples/pal.lua)', function()
     fx.home()
     local home = T.tmpdir()
     local real_home = vim.env.HOME
@@ -181,7 +174,7 @@ describe('a provider from outside', function()
       vim.json.encode({ role = 'user', text = 'Tidy the changelog', cwd = '/work/notes' }),
       vim.json.encode({ role = 'assistant', text = 'Tidied.' }),
     })
-    local chunk = assert(loadstring(readme_example('Adding another agent'), 'README example'))
+    local chunk = assert(loadfile(root .. '/examples/pal.lua'))
     local good, err = pcall(chunk)
     vim.env.HOME = real_home
     ok(good, tostring(err))
@@ -196,7 +189,7 @@ describe('a provider from outside', function()
     eq({ 'pal', '--resume', 'abc' }, p.resume_cmd(c))
     local messages = p.messages(c)
     eq({ 'user', 'Tidy the changelog' }, { messages[1].role, messages[1].text })
-    -- And its hooks, as the README says they would be wired.
+    -- And its hooks, as the example says they would be wired.
     local res = hk.run('pal', '', { args = { 'ask', 'abc' } })
     eq(0, res.code)
     store().refresh_sync({ full = false })

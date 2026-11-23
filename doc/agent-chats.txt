@@ -9,6 +9,7 @@ CONTENTS                                                         *agent-chats*
   Keys, and your own ......................... |agent-chats-keys|
   Groups of your own ......................... |agent-chats-groups|
   Filtering folders out ...................... |agent-chats-filter|
+  Archiving .................................. |agent-chats-archive|
   Searching, replying, starting chats ........ |agent-chats-use|
   A chat's terminal .......................... |agent-chats-terminal|
   Commands ................................... |agent-chats-commands|
@@ -128,6 +129,8 @@ heading and `G` on the last row.
     S  or  /    Search every chat, inside the conversations too
     R           Refresh: look for changes now (the list also does so by
                 itself)
+    A           Archive the chat: it goes under "Archived", at the very end
+                of the list. On an archived chat: take it out again
     ?  or  g?   The menu: everything else, for this row and for the board
     q           Back: out of a conversation, a search, the board
     <Esc>       End a search
@@ -150,7 +153,7 @@ until you give it one in `keys`:
     For the chat            queue (a reply for when it finishes its turn),
                             diff
     To keep track of it     rename, pin, move (into a group of your own, or
-                            out of it), label, note, unread, archive, yank
+                            out of it), label, note, unread, yank
     For the list            group, show_all, read_all
     For the board           pane, hooks, notify
 
@@ -266,6 +269,16 @@ and searched for like any other, and its summary says why it is where it is.
 A chat is there for as long as its folder is in `filter_out`, also one you
 put in a group of your own.
 
+                                                         *agent-chats-archive*
+Archiving. `A` on a chat puts it away: it is listed under "Archived", a
+heading at the very end of the list, after everything else and however the
+list is grouped, folded until you unfold it. Archived chats are left out of
+the counts on the first line and in the statusline. `A` on an archived chat
+takes it out again, and it is back where it was (in its group of your own, if
+it was in one). A chat that moves again (a new turn) comes back by itself. A
+search still finds archived chats. The bar names the key as "Archive" or
+"Unarchive", and the menu has the same line.
+
 ==============================================================================
 SEARCHING, REPLYING, STARTING CHATS                          *agent-chats-use*
 
@@ -282,7 +295,7 @@ what a call was given and what it returned as well with `search.tools`. Words
 are looked for in any order in a row; inside conversations the text is looked
 for as typed, ignoring case unless it has a capital. Archived chats are found
 too; chats quiet for longer than `board.max_age_days` are searched only while
-"Show older and archived chats" is on (a search that finds nothing says how
+"Show older chats" is on (a search that finds nothing says how
 many were not looked at). What was searched for is marked where a row shows it, so a chat found by
 its folder shows why. While you type, the bar names the keys of the
 prompt (<CR> keeps the search, <Esc> calls it off); afterwards `q` (or <Esc>)
@@ -622,14 +635,14 @@ Pass any of these to `setup()`; the values shown are the defaults.
         open = { '<CR>', '<2-LeftMouse>' },
         read = 'C', new = '+',
         search = { 'S', '/' },
-        refresh = 'R',
+        refresh = 'R', archive = 'A',
         menu = { '?', 'g?', '<RightMouse>' },
         back = 'q', clear = '<Esc>', toggle = '<Tab>',
         next_prompt = { ']]', 'J' }, prev_prompt = { '[[', 'K' },
         -- No key by default; in the menu (all but the two that scroll).
         queue = false, move = false, notify = false,
         diff = false, rename = false, pin = false, label = false, note = false,
-        unread = false, archive = false, yank = false, group = false,
+        unread = false, yank = false, group = false,
         pane = false, show_all = false, read_all = false,
         scroll_down = false, scroll_up = false, hooks = false,
       },

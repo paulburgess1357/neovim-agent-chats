@@ -735,11 +735,17 @@ function M.archive(chat)
     return
   end
   local archived = state.toggle_archive(chat.key, chat.updated)
+  -- On the list the row is seen to go where it belongs now; anywhere else
+  -- (a conversation) nothing would show that the key did something.
+  local seen = board().on_list()
   changed()
-  info(
-    archived and 'Archived. It comes back if it moves again, and a search still finds it.'
-      or 'Unarchived.'
-  )
+  if not seen then
+    info(
+      archived
+          and 'Archived: it is under “Archived” at the end of the list until it moves again.'
+        or 'Unarchived: it is back among the others.'
+    )
+  end
 end
 
 function M.labels(chat)

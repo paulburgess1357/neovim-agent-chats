@@ -51,6 +51,7 @@ Then, once, run `:Chats hooks install` (see [Status hooks](#status-hooks)).
 | `+` | New chat: pick the agent, and it opens |
 | `S` or `/` | Search every chat |
 | `R` | Refresh now (the list also refreshes by itself) |
+| `A` | Archive the chat: it goes under "Archived", at the very end of the list. On an archived chat: take it out again |
 | `?` or `g?` | The menu: everything else |
 | `q` | Back: out of a conversation, out of a search, out of the board |
 | `Esc` | End a search |
@@ -58,7 +59,7 @@ Then, once, run `:Chats hooks install` (see [Status hooks](#status-hooks)).
 
 The letters are capitals, so every lowercase key stays what it is, and a default key is not bound where you have a mapping of your own on it. While you type in a chat every key goes to the agent: `<C-\><C-b>` goes back to the list.
 
-Everything else is in the menu, and can be given a key in the `keys` option: rename, pin, label, note, archive, a group of your own, queue a reply, a diff of the chat's folder, notifications.
+Everything else is in the menu, and can be given a key in the `keys` option: rename, pin, label, note, a group of your own, queue a reply, a diff of the chat's folder, notifications.
 
 ### Commands
 

@@ -82,6 +82,16 @@ local function line_of(words)
   end
 end
 
+--- The last line of the list that says something.
+local function last_line()
+  local lines = api.nvim_buf_get_lines(board()._state.buf, 0, -1, false)
+  for i = #lines, 1, -1 do
+    if vim.trim(lines[i]) ~= '' then
+      return i
+    end
+  end
+end
+
 local function to_line(words)
   local S = board()._state
   api.nvim_set_current_win(S.win)
@@ -212,9 +222,9 @@ end)
 T.describe('the bar above the list: the keys of the list', function()
   T.it('are at its right on every row, and the first line has the counts alone', function()
     scene()
-    local always = ' | + New Chat  S Search  R Refresh  ? Menu '
+    local always = ' | + New Chat  S Search  ? Menu '
     to_line('Still here')
-    eq(' Enter Resume  C Conversation' .. always, bar())
+    eq(' Enter Resume  C Conversation  A Archive' .. always, bar())
     to_line('Ended')
     eq(' Enter Fold' .. always, bar())
     eq(' 4 chats · 1 unread', api.nvim_buf_get_lines(board()._state.buf, 0, 1, false)[1])
@@ -262,7 +272,7 @@ T.describe('the pane has no bar of its own', function()
       feed('q')
       settle()
       eq(S.win, api.nvim_get_current_win())
-      has(bar(), 'Enter Resume  C Conversation | + New Chat')
+      has(bar(), 'Enter Resume  C Conversation  A Archive | + New Chat')
       -- A chat's terminal: the way back, and nothing else (every other key
       -- is the agent's).
       fake.install(home)
@@ -278,9 +288,140 @@ T.describe('the pane has no bar of its own', function()
       vim.cmd('wincmd h')
       settle()
       eq(S.win, api.nvim_get_current_win())
-      has(bar(), '| + New Chat  S Search  R Refresh  ? Menu ')
+      has(bar(), '| + New Chat  S Search  ? Menu ')
       hasnt(bar(), 'Back')
       eq('', pane_bar())
     end
   )
+end)
+
+T.describe('archiving a chat', function()
+  --- One chat that can be resumed, one whose folder is gone, one in a
+  --- folder that is filtered out, and one more to archive. All read.
+  local function shelf(extra)
+    local lost = T.tmpdir() .. '/lost'
+    local home = fx.home(
+      vim.tbl_deep_extend(
+        'force',
+        { board = { spinner = false }, filter_out = { 'waffle' } },
+        extra or {}
+      )
+    )
+    local made = {
+      keep = chat(home, 'Kept in sight', T.folder('here'), 60),
+      away = chat(home, 'Put away', T.folder('here'), 90),
+      lost = chat(home, 'Lost one', lost, 120),
+      waffle = chat(home, 'Waffle one', T.folder('waffle'), 150),
+    }
+    state().update(function(s)
+      s.baseline = os.time() + 10
+    end)
+    store().refresh_sync()
+    store().start = function() end
+    board().open()
+    return home, made
+  end
+
+  T.it(
+    'puts it under a heading at the very end, with one key, and takes it out with the same',
+    function()
+      local _, made = shelf()
+      -- (Three: the one in a folder that is filtered out is not counted.)
+      has(list(), '3 chats')
+      has(list(), '▾ Ended  2')
+      board().goto_chat(key(made.away))
+      has(bar(), 'C Conversation  A Archive | ')
+      -- No message: the row is seen to go.
+      local said = notes(function()
+        feed('A')
+        settle()
+      end)
+      eq('', said)
+      local text = list()
+      has(text, '▾ Ended  1')
+      hasnt(text, 'Put away')
+      has(text, '▸ Archived  1   A takes a chat out again')
+      -- After everything else, the other headings that are out of the way too.
+      ok(line_of('Folder gone  1') < line_of('Filtered out  1'))
+      ok(line_of('Filtered out  1') < line_of('Archived  1'))
+      eq(last_line(), line_of('Archived  1'))
+      -- Not counted: it is put away.
+      has(text, '2 chats')
+      -- (The two that are left: the one in sight, and the one whose folder
+      -- is gone.)
+      eq(2, store().counts().ended)
+      -- The cursor is on a row still, and the heading says what it is.
+      ok(board().row(), 'the cursor is on a row')
+      to_line('Archived  1')
+      has(bar(), 'Enter Unfold')
+      has(pane():gsub('\n%s*', ' '), 'Chats you archived.')
+      has(pane():gsub('\n%s*', ' '), 'A on one of them takes it out again')
+      -- Unfolded, its chat says how to take it out; and the key does.
+      feed('<CR>')
+      settle()
+      has(list(), 'Put away')
+      to_line('Put away')
+      has(bar(), 'C Conversation  A Unarchive | ')
+      has(pane(), 'Archived: A takes it out again.')
+      feed('A')
+      settle()
+      hasnt(list(), 'Archived')
+      has(list(), '▾ Ended  2')
+      has(list(), '3 chats')
+    end
+  )
+
+  T.it('keeps it there however the list is grouped, and gives it back to its group', function()
+    local _, made = shelf()
+    state().set_group(key(made.away), 'Release')
+    board().render()
+    has(list(), '▾ Release  1')
+    actions().archive(store().get(key(made.away)))
+    hasnt(list(), 'Release')
+    has(list(), '▸ Archived  1')
+    for _, mode in ipairs({ 'folder', 'agent', 'worktree' }) do
+      board().set_group(mode)
+      has(list(), '▸ Archived  1', mode)
+      eq(last_line(), line_of('Archived  1'), mode)
+    end
+    board().set_group('status')
+    -- A search shows what it finds, under that heading.
+    board().search('away', { conversations = false })
+    has(list(), '▾ Archived  1')
+    has(list(), 'Put away')
+    board().clear()
+    -- One whose folder is filtered out can be archived as well.
+    actions().archive(store().get(key(made.waffle)))
+    has(list(), '▸ Archived  2')
+    hasnt(list(), 'Filtered out')
+    -- Taken out, it is in the group it was in.
+    actions().archive(store().get(key(made.away)))
+    has(list(), '▾ Release  1')
+    has(list(), '▸ Archived  1')
+  end)
+
+  T.it('comes back by itself when the chat moves again, and says so from a conversation', function()
+    local home, made = shelf()
+    -- From where the list is not what is looked at, the key says what it did.
+    actions().read(store().get(key(made.away)))
+    eq('agent-chats-conversation', vim.bo.filetype)
+    local said = notes(function()
+      feed('A')
+      settle()
+    end)
+    has(said, 'Archived: it is under “Archived” at the end of the list')
+    feed('q')
+    settle()
+    has(list(), '▸ Archived  1')
+    -- A new turn in it: it is a chat to look at again.
+    vim.wait(1100)
+    local again = home:chat({ id = made.away.id, cwd = T.folder('here'), start = os.time() })
+    again:user('Please put away'):title('Put away'):assistant('Done.'):turn_done()
+    again:user('One more thing'):assistant('Done as well.'):turn_done()
+    again:write(os.time() + 2)
+    store().refresh_sync()
+    board().render()
+    hasnt(list(), 'Archived')
+    has(list(), 'Put away')
+  end)
 end)
