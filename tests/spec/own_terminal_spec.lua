@@ -130,8 +130,10 @@ local function hide(win)
 end
 
 --- A home with three chats, the board open in a tab of its own.
-local function scene()
-  local home = fx.home({ board = { spinner = false, intro = false } })
+local function scene(extra)
+  local home = fx.home(
+    vim.tbl_deep_extend('force', { board = { spinner = false, intro = false } }, extra or {})
+  )
   local made = {
     mine = chat(home, 'Runs in my own terminal', 30),
     other = chat(home, 'Another chat', 600),
@@ -255,6 +257,67 @@ describe('a terminal you made yourself', function()
     eq({ mine }, vim.fn.win_findbuf(buf), 'the pane no longer holds a second window on it')
     eq('agent-chats-summary', vim.bo[pane_buf()].filetype)
     eq({}, said)
+  end)
+end)
+
+describe('a terminal that is deleted while the pane shows it', function()
+  --- What a config does that keeps no dead terminals: when the shell of
+  --- one exits, its buffer is deleted. Neovim closes every window that
+  --- shows it, the pane among them.
+  local function delete(buf)
+    local job = vim.bo[buf].channel
+    vim.fn.jobstop(job)
+    vim.fn.jobwait({ job }, 3000)
+    api.nvim_buf_delete(buf, { force = true })
+    settle()
+  end
+
+  for _, layout in ipairs({ 'tab', 'float' }) do
+    it(('does not take the pane with it (%s)'):format(layout), function()
+      local home, made = scene({ board = { layout = layout } })
+      local buf, win = own_terminal(home, made.mine)
+      hide(win)
+      board().open()
+      local S = board()._state
+      go(made.mine)
+      eq(buf, pane_buf(), 'the pane shows the live terminal')
+      local width = api.nvim_win_get_width(S.win)
+      delete(buf)
+      -- Nobody asked for the list alone: with the pane gone there would be
+      -- one window on the board, and none beside it to go to.
+      ok(S.pane_on, 'the pane is still wanted')
+      ok(S.pane_win and api.nvim_win_is_valid(S.pane_win), 'and it is there again')
+      eq('agent-chats-summary', vim.bo[pane_buf()].filetype)
+      eq(S.win, api.nvim_get_current_win(), 'the cursor has not left the list')
+      eq(width, api.nvim_win_get_width(S.win), 'which is as wide as it was')
+      -- It follows the cursor as it did.
+      go(made.other)
+      has(pane_text(), '# Another chat')
+      go(made.third)
+      has(pane_text(), '# A third chat')
+    end)
+  end
+
+  it('is another thing than the pane being closed, which is asking for the list alone', function()
+    local home, made = scene()
+    local buf, win = own_terminal(home, made.mine)
+    hide(win)
+    board().open()
+    local S = board()._state
+    go(made.mine)
+    eq(buf, pane_buf())
+    -- `:only` on the list: its terminal is still there, the pane is not.
+    vim.cmd('only')
+    settle()
+    ok(api.nvim_buf_is_valid(buf))
+    eq(nil, S.pane_win)
+    ok(not S.pane_on, 'the pane stays away')
+    eq({ S.win }, api.nvim_tabpage_list_wins(0))
+    -- Until it is asked for again.
+    board().toggle_pane()
+    settle()
+    ok(S.pane_win and api.nvim_win_is_valid(S.pane_win))
+    eq(buf, pane_buf())
   end)
 end)
 

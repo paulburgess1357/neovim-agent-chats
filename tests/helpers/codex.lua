@@ -56,19 +56,42 @@ function Rollout:response(typ, fields)
   return self:_line('response_item', typed(typ, fields))
 end
 
---- The first line. `opts`: source, instructions (bytes of base instructions), no_git.
+--- The first line. `opts`: source, instructions (bytes of base instructions),
+--- no_git; and for a thread that another one spawned (a subagent), as Codex
+--- 0.171 writes it: spawned = { parent, nickname?, path? }; forked = the id
+--- of the thread a fork was made of.
 function Rollout:meta(opts)
   opts = opts or {}
+  local spawned = opts.spawned
+  local source = opts.source or 'cli'
+  if spawned then
+    source = {
+      subagent = {
+        thread_spawn = {
+          parent_thread_id = spawned.parent,
+          depth = 1,
+          agent_path = spawned.path,
+          agent_nickname = spawned.nickname,
+        },
+      },
+    }
+  end
   return self:_line(
     'session_meta',
     vim.json.encode({
-      session_id = self.id,
+      -- (The session a spawned thread belongs to is that of its parent.)
+      session_id = spawned and spawned.parent or self.id,
       id = self.id,
+      forked_from_id = spawned and spawned.parent or opts.forked,
+      parent_thread_id = spawned and spawned.parent or nil,
       timestamp = iso(self.ts),
       cwd = self.cwd,
       originator = 'codex-tui',
-      cli_version = '0.166.0',
-      source = opts.source or 'cli',
+      cli_version = spawned and '0.171.0' or '0.166.0',
+      source = source,
+      thread_source = spawned and 'subagent' or 'user',
+      agent_nickname = spawned and spawned.nickname or nil,
+      agent_path = spawned and spawned.path or nil,
       model_provider = 'openai',
       base_instructions = { text = string.rep('i', opts.instructions or 200) },
       git = not opts.no_git and { commit_hash = string.rep('a', 40), branch = self.branch } or nil,

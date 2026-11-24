@@ -142,6 +142,22 @@ M.defaults = {
   -- search still finds them.
   filter_out = {},
 
+  -- Chats you do not want at all, by what they are called: the name on
+  -- their row (the one you gave a chat, else the agent's own title for it,
+  -- else the first line of its first prompt), capitals or not. They are not
+  -- listed anywhere, not even under "Filtered out", and nothing more is done
+  -- with them: a chat that is left out is read again only when its file has
+  -- changed, to see whether it is still called that. What such a chat
+  -- started is left out with it.
+  filter_out_names = {},
+
+  -- Chats that another chat started: the subagents an agent hands part of
+  -- its work to. false: they are listed under the chat that started them,
+  -- when its row is unfolded (`keys.toggle`). true: they are not listed at
+  -- all, and the board has the chats you talk to yourself and no others. A
+  -- chat still says "Needs you" when one it started is waiting for you.
+  hide_subagents = false,
+
   -- Where the plugin keeps what it remembers about chats (read marks, pins,
   -- labels, notes, queued replies). nil: stdpath('state')/agent-chats/state.json
   state_file = nil,
@@ -228,6 +244,9 @@ local explicit_back = false
 -- when first asked for), and what was found for each folder asked about.
 local filters ---@type { entry: string, path: string?, name: string? }[]?
 local filtered = {} ---@type table<string, string|false>
+-- The names of `filter_out_names` as they are compared (see `fold`), each
+-- with the entry it was written as.
+local by_name ---@type table<string, string>?
 
 local LAYOUTS = { tab = true, float = true, current = true }
 local GROUPS = { status = true, folder = true, agent = true, worktree = true }
@@ -250,7 +269,7 @@ local GONE_KEYS = {
   prev_attention = 'going from one chat that needs you to the next was taken out',
 }
 -- Options that are a list as a whole (every other one is a table of names).
-local LISTS = { filter_out = true }
+local LISTS = { filter_out = true, filter_out_names = true }
 
 local function warn(msg)
   vim.schedule(function()
@@ -387,6 +406,43 @@ local function check(cfg, user)
     end
   end
   cfg.filter_out = folders
+  -- The same for the names: one may be given as it is.
+  local called = cfg.filter_out_names
+  if type(called) == 'string' then
+    called = { called }
+  end
+  local kept = {}
+  if type(called) ~= 'table' then
+    warn(
+      ('filter_out_names must be a list of the names of chats; %s is not one, so no chat is left out by its name'):format(
+        vim.inspect(called)
+      )
+    )
+  else
+    for _, entry in pairs(called) do
+      if type(entry) == 'string' and vim.trim(entry) ~= '' then
+        kept[#kept + 1] = vim.trim(entry)
+      else
+        warn(
+          ('filter_out_names takes the names of chats; %s is not a name, so it is left out'):format(
+            (vim.inspect(entry):gsub('%s+', ' '))
+          )
+        )
+      end
+    end
+  end
+  -- (In one order, however the table was gone through: the index of chats
+  -- tells by the list whether the names have changed.)
+  table.sort(kept)
+  cfg.filter_out_names = kept
+  if type(cfg.hide_subagents) ~= 'boolean' then
+    warn(
+      ('hide_subagents must be true or false; %s is neither, so the default is kept'):format(
+        vim.inspect(cfg.hide_subagents)
+      )
+    )
+    cfg.hide_subagents = M.defaults.hide_subagents
+  end
   for action, lhs in pairs(cfg.keys) do
     if M.defaults.keys[action] == nil then
       local names = vim.tbl_keys(M.defaults.keys)
@@ -464,12 +520,14 @@ function M.setup(opts)
   if opts.icons and opts.icons.spinner then
     cfg.icons.spinner = vim.deepcopy(opts.icons.spinner)
   end
-  if opts.filter_out ~= nil then
-    cfg.filter_out = vim.deepcopy(opts.filter_out)
+  for _, list in ipairs({ 'filter_out', 'filter_out_names' }) do
+    if opts[list] ~= nil then
+      cfg[list] = vim.deepcopy(opts[list])
+    end
   end
   check(cfg, opts)
   current = cfg
-  filters, filtered = nil, {}
+  filters, filtered, by_name = nil, {}, nil
   -- Which keys are bound is worked out again from the new options, and a
   -- board that is open is given them.
   local keys = package.loaded['agent-chats.keys']
@@ -568,6 +626,34 @@ function M.filtered(cwd)
   end
   filtered[cwd] = found
   return found or nil
+end
+
+--- A name as two of them are compared: on one line, its blanks single, and
+--- without regard to capitals.
+local function fold(name)
+  return vim.fn.tolower(vim.trim((name:gsub('[%c%s]+', ' '))))
+end
+
+--- The entry of `filter_out_names` that a chat called `name` is left out
+--- by; nil when it is not left out. `name` is what its row would say.
+---@param name string?
+---@return string?
+function M.named_out(name)
+  if type(name) ~= 'string' or name == '' then
+    return nil
+  end
+  local entries = M.get().filter_out_names
+  if #entries == 0 then
+    return nil
+  end
+  if not by_name then
+    by_name = {}
+    for _, entry in ipairs(entries) do
+      local as = fold(entry)
+      by_name[as] = by_name[as] or entry
+    end
+  end
+  return by_name[fold(name)]
 end
 
 --- Every key the options give for an action, bound or not.

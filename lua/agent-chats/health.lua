@@ -204,6 +204,21 @@ function M.check()
       )
     )
   end
+  -- The same for what is not listed at all: a chat that is looked for and
+  -- not found may be one of these.
+  local named = config.get().filter_out_names
+  if #named > 0 then
+    h.info(
+      ('Chats left out by name (filter_out_names): %s. They are not listed anywhere'):format(
+        table.concat(named, ', ')
+      )
+    )
+  end
+  if config.get().hide_subagents then
+    h.info(
+      'Chats that another chat started are not listed (hide_subagents): only the chats you talk to yourself are'
+    )
+  end
 
   h.start('agent-chats: agents')
   local found = 0

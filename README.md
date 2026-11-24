@@ -91,6 +91,22 @@ require('agent-chats').setup({
 
 A name stands for every folder called that, wherever it is, and everything inside it. A path stands for that one folder and everything inside it. Their chats go under one heading, "Filtered out", at the end of the list and folded. They are not counted and you are not notified about them; a search still finds them.
 
+**Leave chats out by name.** Chats you do not want to see at all (the ones a script starts with the same prompt every time) are left out by what their row says:
+
+```lua
+require('agent-chats').setup({
+  filter_out_names = { 'Capital of France' },
+})
+```
+
+A name is the whole of what the row is called: the name you gave the chat, else the title its agent gave it, else the first line of its first prompt. Capitals do not matter. These chats are not listed anywhere, not even under "Filtered out", and once a chat is known to be called that, its file is not read again until it changes.
+
+**Hide subagents.** A chat that another chat started (an agent handing part of its work to other agents) is listed under the chat that started it, and only when you unfold that row with `Tab`. To leave them out altogether, so that the board has the chats you talk to yourself and no others:
+
+```lua
+require('agent-chats').setup({ hide_subagents = true })
+```
+
 **Archive a chat.** "Archive it" in the menu (`A`) puts one chat under "Archived", at the very end of the list. The same on an archived chat takes it out again, and a chat that becomes active again comes back by itself.
 
 **Folder gone.** A chat whose folder no longer exists cannot be resumed, only read. Those are under a heading of their own as well.

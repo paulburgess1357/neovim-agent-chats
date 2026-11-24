@@ -2748,6 +2748,9 @@ function M.toggle_row()
       S.expanded[key] = nil
     elseif #store.load_children(row.chat) > 0 then
       S.expanded[key] = true
+    elseif config.get().hide_subagents then
+      -- It may have some: none is looked for, so that is not said.
+      info('Subagents are not shown: hide_subagents is on in the options.')
     else
       info('This chat has no subagents.')
     end
@@ -3809,6 +3812,17 @@ local function open_board(opts)
         -- the summary itself is asking for the pane to go.
         local was_in = api.nvim_get_current_win() == closed
         local view = S.pane_mode == 'term' or S.pane_mode == 'conversation' or S.pane_mode == 'diff'
+        -- What it showed, and whether that outlives a window that shows
+        -- it: afterwards, this tells a pane that was closed from one whose
+        -- buffer was deleted under it.
+        local shown, lasting
+        pcall(function()
+          shown = api.nvim_win_get_buf(closed)
+          -- (With 'nohidden' a buffer goes with its last window, a running
+          -- terminal too: nothing can be told there.)
+          local hidden = vim.bo[shown].bufhidden
+          lasting = hidden == 'hide' or (hidden == '' and vim.o.hidden)
+        end)
         S.pane_win = nil
         -- Nothing is shown beside the list now: no row is marked.
         mark_shown()
@@ -3827,6 +3841,25 @@ local function open_board(opts)
             vim.schedule(function()
               if M.is_open() and S.layout == 'float' and not valid_win(S.pane_win) then
                 pcall(api.nvim_win_set_config, S.win, { width = M._float_dims().width })
+                M.render()
+              end
+            end)
+          end
+          -- Unless the pane went because what it showed was deleted: that
+          -- is no wish to have the list alone. A chat's terminal goes like
+          -- that under a config that deletes the buffer of a shell that has
+          -- exited, and the board would be left as one window, with none
+          -- beside it to go to and nothing to say why. The pane comes back,
+          -- with what the row under the cursor has to show. (Which of the
+          -- two it was is known once the buffer has had the time to go.)
+          if lasting and not S.closing then
+            local gen = S.gen
+            vim.schedule(function()
+              local gone = not (valid_buf(shown) and api.nvim_buf_is_loaded(shown))
+              if gone and S.gen == gen and M.is_open() and not S.closing and not S.pane_on then
+                S.pane_on = true
+                open_pane()
+                S.pane_shown = nil
                 M.render()
               end
             end)

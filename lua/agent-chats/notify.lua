@@ -91,9 +91,10 @@ function M.handle(ev)
   end
   -- A chat listed under the one that started it is spoken for by that one
   -- (see `through` in store.lua). One whose parent is not in the index is
-  -- a row of its own, and announced like any other.
+  -- a row of its own, and announced like any other: unless the options hide
+  -- what a chat started (`hide_subagents`), and it has no row at all.
   local index = package.loaded['agent-chats.store']
-  if chat.parent and index and index.get(chat.parent) then
+  if chat.parent and ((index and index.get(chat.parent)) or config.get().hide_subagents) then
     return nil
   end
   local kind = (ev.to == 'attention' or ev.to == 'done') and ev.to or nil

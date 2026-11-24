@@ -22,6 +22,7 @@
 local uv = vim.uv
 local async = require('agent-chats.util.async')
 local config = require('agent-chats.config')
+local display = require('agent-chats.display')
 local events = require('agent-chats.events')
 local fs = require('agent-chats.util.fs')
 local proc = require('agent-chats.util.proc')
@@ -40,7 +41,16 @@ M.older = 0
 M.show_all = false
 
 local by_provider = {} ---@type table<string, table<string, agent_chats.Chat>>
-local unparsed = {} ---@type table<string, { mtime: number, size: integer, old: boolean? }>
+-- Chats that are on disk and not in the index, each as its file was when
+-- that was found out: while the file stays as it is, it is not read again.
+--   old     past board.max_age_days
+--   named   left out for what it is called (`filter_out_names`): the entry
+--           of the list that says so. `via`: the chat that started it,
+--           when it is left out because that one is.
+--   none    it holds no conversation
+local unparsed = {} ---@type table<string, { mtime: number, size: integer, rev: any?, old: boolean?, named: string?, via: string? }>
+-- The names chats are left out by, as of the last look (see `do_refresh`).
+local names_under ---@type string?
 local older_by = {} ---@type table<string, integer>
 local pathless = {} ---@type table<string, boolean>
 local subagents = {} ---@type table<string, agent_chats.Chat[]>
@@ -130,7 +140,9 @@ end
 -- Cache of parsed chats, so the board is populated the moment it opens
 -----------------------------------------------------------------------------
 
-local CACHE_VERSION = 1
+-- (2: a chat says which chat started it for every agent that records it.
+-- What was cached before does not, and would not be read again to find out.)
+local CACHE_VERSION = 2
 
 local function cache_path()
   local opt = config.get().cache_file
@@ -164,6 +176,27 @@ local function load_cache()
       by_provider[chat.provider][chat.id] = chat
     end
   end
+  -- The chats that were left out for their name, as far as the options
+  -- still name them: not one of them is read to find that out again.
+  for key, rec in pairs(type(raw.left_out) == 'table' and raw.left_out or {}) do
+    if
+      type(rec) == 'table'
+      and type(rec.named) == 'string'
+      and type(rec.mtime) == 'number'
+      and type(rec.size) == 'number'
+      and config.named_out(rec.named)
+      and not unparsed[key]
+      and not M.chats[key]
+    then
+      unparsed[key] = {
+        mtime = rec.mtime,
+        size = rec.size,
+        rev = rec.rev,
+        named = rec.named,
+        via = type(rec.via) == 'string' and rec.via or nil,
+      }
+    end
+  end
 end
 
 local function save_cache()
@@ -186,7 +219,19 @@ local function save_cache()
       out[key] = copy
     end
   end
-  local ok, json = pcall(vim.json.encode, { version = CACHE_VERSION, chats = out })
+  local left_out = {}
+  for key, rec in pairs(unparsed) do
+    if rec.named then
+      left_out[key] =
+        { mtime = rec.mtime, size = rec.size, rev = rec.rev, named = rec.named, via = rec.via }
+    end
+  end
+  local ok, json = pcall(vim.json.encode, {
+    version = CACHE_VERSION,
+    chats = out,
+    -- (Left out when there are none: an empty table would be written as a list.)
+    left_out = next(left_out) ~= nil and left_out or nil,
+  })
   if ok then
     fs.write_atomic(path, json)
   end
@@ -207,6 +252,49 @@ local function drop(chat)
     mine[chat.id] = nil
   end
   cache_dirty = true
+end
+
+--- Why `chat` is left out of the index, when it is: the entry of
+--- `filter_out_names` that names it. What a chat that is left out started
+--- goes with it (the second value: that chat), or it would be listed in
+--- its place.
+---
+--- Not a chat that is open in a terminal of this Neovim: its terminal is
+--- there to go back to, whatever the chat is called. And not one that has
+--- no name yet (a session that has not been sent a prompt).
+---@param chat agent_chats.Chat
+---@return string? entry, string? via
+local function left_out(chat)
+  if #config.get().filter_out_names == 0 or chat.stub then
+    return nil
+  end
+  local term = package.loaded['agent-chats.term']
+  if term and term.find(chat) then
+    return nil
+  end
+  local entry = config.named_out(display.title(chat))
+  if entry then
+    return entry
+  end
+  local above = chat.parent and unparsed[chat.parent] or nil
+  if above and above.named then
+    return above.named, chat.parent
+  end
+  return nil
+end
+
+--- Take `chat` out of the index for its name. As its file is now, it is
+--- not read again.
+local function set_aside(chat, entry, via)
+  unparsed[chat.key] =
+    { mtime = chat.mtime, size = chat.size, rev = chat.rev, named = entry, via = via }
+  drop(chat)
+end
+
+--- Whether `key` is a chat that is left out for its name.
+local function is_aside(key)
+  local rec = unparsed[key]
+  return rec ~= nil and rec.named ~= nil
 end
 
 ---@return agent_chats.Chat?
@@ -239,6 +327,13 @@ local function apply_entry(p, entry, prev)
     chat.subs_at = prev.subs_at
   end
   chat.status = chat.status or 'ended'
+  local named, via = left_out(chat)
+  if named then
+    -- Called something the options leave out: it gets no further than this.
+    -- (The chat it was until now goes as well.)
+    set_aside(chat, named, via)
+    return nil
+  end
   by_provider[p.name][entry.id] = chat
   M.chats[key] = chat
   cache_dirty = true
@@ -449,6 +544,10 @@ local function hot(chat, now)
 end
 
 local function refresh_subagents(p, chat, now)
+  if config.get().hide_subagents then
+    -- Not listed, so not looked for either.
+    return false
+  end
   local stamp = chat.mtime
   local wanted = chat.live or subagents[chat.key] ~= nil or now - (chat.updated or 0) < 86400
   if not wanted or (chat.subs_at == stamp and not chat.live) then
@@ -501,7 +600,8 @@ local function adopt_strays(p, rules, mine)
   aliases[name] = alias
   local by_path
   for id in pairs(reporting[name] or {}) do
-    if not mine[id] then
+    -- (Not the log of a chat that is left out for its name: it has none.)
+    if not mine[id] and not is_aside(name .. ':' .. id) then
       local r = events.get(name, rules, id)
       if r and r.path then
         if not by_path then
@@ -709,17 +809,43 @@ local function refresh_provider(p, full, now, cutoff)
         and not state.pinned(key)
         -- (Nor one you put in a group: it stays where you put it.)
         and not state.group(key)
+      -- Left out for its name, and still the file it was then. (One that
+      -- went with the chat that started it is looked at again when that
+      -- chat is no longer left out.)
+      local aside = skip ~= nil
+        and skip.named ~= nil
+        and same(skip, e)
+        and (skip.via == nil or is_aside(skip.via))
       if old then
         -- Past board.max_age_days: not read, and no longer listed if it was.
         if chat and not chat.stub then
           drop(chat)
           changed = true
         end
-        unparsed[key] = { mtime = e.mtime, size = e.size, rev = e.rev, old = true }
-        older = older + 1
+        unparsed[key] = {
+          mtime = e.mtime,
+          size = e.size,
+          rev = e.rev,
+          old = true,
+          named = aside and skip.named or nil,
+          via = aside and skip.via or nil,
+        }
+        -- (One that is left out for its name is not among "the older
+        -- ones not shown" either: showing those would not show it.)
+        if not aside then
+          older = older + 1
+        end
       elseif chat and not chat.stub and same(chat, e) then
         -- Unchanged since it was parsed.
-      elseif skip and same(skip, e) and not skip.old then
+      elseif aside then
+        -- Not read: nothing about it has changed.
+        skip.old = nil
+        if chat then
+          -- (The row a running session had before it had a name.)
+          drop(chat)
+          changed = true
+        end
+      elseif skip and same(skip, e) and not skip.old and not skip.named then
         -- Known to hold no conversation.
       elseif apply_entry(p, e, chat) then
         changed = true
@@ -752,8 +878,11 @@ local function refresh_provider(p, full, now, cutoff)
             data = chat.data,
             rev = p.rev and p.rev(id) or nil,
           }
-          if not same(chat, entry) and apply_entry(p, entry, chat) then
-            changed = true
+          if not same(chat, entry) then
+            -- (No chat any more: it is left out for the name it has now.)
+            if apply_entry(p, entry, chat) or mine[id] == nil then
+              changed = true
+            end
           end
         end
       end
@@ -804,7 +933,15 @@ local function refresh_provider(p, full, now, cutoff)
   -- transcript we have not seen, or one that has not been sent a prompt.
   for id, info in pairs(running or {}) do
     local chat = mine[id]
-    if not chat or chat.stub then
+    if is_aside(name .. ':' .. id) then
+      -- Left out for its name, running or not: it has no row, and no
+      -- stand-in for one. Its file is looked at again with all the others,
+      -- when it has changed.
+      if chat then
+        drop(chat)
+        changed = true
+      end
+    elseif not chat or chat.stub then
       local entry = p.locate and p.locate(id, info) or nil
       if entry and p.rev then
         entry.rev = p.rev(id)
@@ -812,6 +949,10 @@ local function refresh_provider(p, full, now, cutoff)
       local made = entry and apply_entry(p, entry, chat) or nil
       if made then
         changed = true
+      elseif is_aside(name .. ':' .. id) then
+        -- It has a name now, and one the options leave out: the row it had
+        -- as a session without one went with it.
+        changed = changed or chat ~= nil
       elseif not chat then
         local at = info.started or now
         mine[id] = {
@@ -882,6 +1023,24 @@ local function refresh_provider(p, full, now, cutoff)
       changed = true
     elseif p.subagents and not chat.stub and refresh_subagents(p, chat, now) then
       changed = true
+    end
+  end
+
+  -- What a chat is called can change without its file changing (you named
+  -- it yourself, its agent says what its session is called, the options
+  -- name another chat now): every chat is asked once more. Until none goes,
+  -- since one that goes takes what it started with it.
+  if #config.get().filter_out_names > 0 then
+    local gone = true
+    while gone do
+      gone = false
+      for _, chat in pairs(mine) do
+        local named, via = left_out(chat)
+        if named then
+          set_aside(chat, named, via)
+          gone, changed = true, true
+        end
+      end
     end
   end
   return changed
@@ -1154,6 +1313,19 @@ local function do_refresh(full)
     load_cache()
   end
   full = full or not M.initialized
+  -- The options name other chats to leave out than at the last look: what
+  -- was left out by the old names is read again, in a look at everything.
+  local names = table.concat(cfg.filter_out_names, '\n')
+  if names_under ~= nil and names_under ~= names then
+    for key, rec in pairs(unparsed) do
+      if rec.named then
+        unparsed[key] = nil
+      end
+    end
+    cache_dirty = true
+    full = true
+  end
+  names_under = names
   local cutoff
   if not M.show_all and (cfg.board.max_age_days or 0) > 0 then
     cutoff = now - cfg.board.max_age_days * 86400
@@ -1451,9 +1623,13 @@ function M.get(key)
 end
 
 --- Chats spawned by `key`: subagents and child sessions, oldest first.
+--- None where the options hide them (`hide_subagents`).
 ---@return agent_chats.Chat[]
 function M.children(key)
   local out = {}
+  if config.get().hide_subagents then
+    return out
+  end
   vim.list_extend(out, subagents[key] or {})
   vim.list_extend(out, children[key] or {})
   return out
@@ -1462,6 +1638,9 @@ end
 --- Load a chat's subagents now (the board asks when a row is unfolded).
 function M.load_children(chat)
   local p = providers.get(chat.provider)
+  if config.get().hide_subagents then
+    return {}
+  end
   if p and p.subagents and not chat.stub and not subagents[chat.key] then
     local ok, subs = pcall(p.subagents, chat)
     if ok and #subs > 0 then
@@ -1479,8 +1658,13 @@ end
 ---@return agent_chats.Chat[]
 function M.list(opts)
   local out = {}
+  -- With `hide_subagents`, a chat that another one started has no row at
+  -- all: not under that chat, and not in its place when that chat is not
+  -- in the index. (It stays in the index: the chat that started it says
+  -- "Needs you" through it.)
+  local hidden = config.get().hide_subagents
   for key, chat in pairs(M.chats) do
-    local nested = chat.parent and M.chats[chat.parent] ~= nil
+    local nested = chat.parent and (hidden or M.chats[chat.parent] ~= nil)
     -- A session that never held a conversation (it only ran a command such
     -- as a login) is noise unless it is open right now.
     local empty = not chat.live
@@ -1528,6 +1712,7 @@ function M.reset()
   last_full, fast, cache_loaded, cache_dirty = 0, false, false, false
   reporting, aliases, answers, seen_alive = {}, {}, {}, {}
   moved, pending = {}, {}
+  names_under = nil
   started_at = os.time()
   ended_at = {}
   seen_foreign = 0

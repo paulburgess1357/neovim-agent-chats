@@ -363,6 +363,35 @@ local function has_turn(records)
   return false
 end
 
+--- The thread that started this one, when it is a subagent: a thread an
+--- agent spawned to hand part of its work to. Its session_meta says so
+--- (`source.subagent`), and names the thread that did.
+---
+--- Not a fork (`forked_from_id` alone): a chat you forked yourself is a
+--- chat of its own.
+---@return string? parent, string? name  The id of that thread, and what Codex calls this one: "Beauvoir: onboarding".
+local function spawned_by(p)
+  local sub = type(p.source) == 'table' and p.source.subagent or nil
+  if sub == nil and p.thread_source ~= 'subagent' then
+    return nil
+  end
+  local spawn = type(sub) == 'table' and type(sub.thread_spawn) == 'table' and sub.thread_spawn
+    or {}
+  local parent = str(spawn.parent_thread_id) or str(p.parent_thread_id)
+  if parent == p.id then
+    parent = nil
+  end
+  -- The name Codex gave the agent, and what it was spawned for (the last
+  -- part of its path: "/root/onboarding").
+  local nick = str(spawn.agent_nickname) or str(p.agent_nickname)
+  local path = str(spawn.agent_path) or str(p.agent_path)
+  local task = path and path:match('([^/]+)/*$') or nil
+  if task == 'root' then
+    task = nil
+  end
+  return parent, (nick and task) and (nick .. ': ' .. task) or nick or task
+end
+
 --- Returns whether the rollout's session_meta was among the records.
 local function scan_head(records, out)
   local meta = false
@@ -370,6 +399,8 @@ local function scan_head(records, out)
   for _, r in ipairs(records) do
     local p = payload(r)
     if r.type == 'session_meta' then
+      -- (The first one: a subagent's rollout begins with its own, and has
+      -- that of the thread it was spawned from after it.)
       if not meta then
         meta = true
         out.cwd = str(p.cwd)
@@ -379,6 +410,8 @@ local function scan_head(records, out)
         elseif type(p.source) == 'table' then
           out.origin = (next(p.source))
         end
+        -- (Its name is its title until the session index has one for it.)
+        out.parent_id, out.title = spawned_by(p)
         if type(p.git) == 'table' then
           out.branch = str(p.git.branch)
         end
@@ -523,7 +556,16 @@ function M.parse(entry, prev)
     tail, tail_whole = common.tail(entry.path, entry.size, { skip = skip, enough = has_turn })
   end
   scan_tail(tail, out, tail_whole)
-  out.title = titles()[entry.id]
+  -- A subagent has no title in the session index, and its rollout begins
+  -- with the conversation it was spawned from: by its first prompt it would
+  -- be called what the chat that spawned it is called. It goes by the name
+  -- Codex gave it, which the head says (and which is kept when only the
+  -- tail was read).
+  local spawned
+  if out.parent_id then
+    spawned = out.title or (prev and prev.path == entry.path and prev.title) or 'subagent'
+  end
+  out.title = titles()[entry.id] or spawned
   if prev and prev.path == entry.path then
     -- The branch comes from the head; the rest may lie before the tail.
     out.branch = out.branch or prev.branch
