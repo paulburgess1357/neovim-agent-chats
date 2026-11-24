@@ -1592,6 +1592,16 @@ local function row_hints(win)
       if pane_term(chat) then
         hint('info', 'Info', { drop = 1 })
       end
+      -- The key that pins a chat is named last, and is the very first to
+      -- give way (of two that give way alike, the later one goes): it is
+      -- there while there is room to spare, and never in the place of
+      -- another key. The menu names it on every list, wide or narrow.
+      -- (One name for both ways, as for the summary: "Unpin" would not
+      -- always fit where "Pin" did, and the key would go as it is pressed.
+      -- The star on the row says which way it is.)
+      if not chat.unstarted then
+        hint('pin', 'Pin', { drop = 1 })
+      end
     end
   end
   return enter, out, note
@@ -1686,7 +1696,8 @@ end
 --- and last what starts a chat or ends a search (8). The way to the menu
 --- stays.
 ---
---- The left side has what room that leaves: the note is said in short
+--- The left side has what room that leaves, and what the keys that are
+--- only there while there is room (1) give back: the note is said in short
 --- (1), then not at all (4); what Enter does is the last to go (9).
 local function bar_text(width, left, note, right, menu, least, reserve)
   local function esc(s)
@@ -1780,10 +1791,27 @@ local function bar_text(width, left, note, right, menu, least, reserve)
     return beside(span(rights))
   end)
   local right_w = span(rights)
-  reduce(lefts, function()
+  local function left_fits()
     local w = span(lefts)
     return w == 0 or 2 + w + (right_w > 0 and 2 or 0) + right_w <= width
-  end)
+  end
+  -- A key that is at the right only while there is room to spare (1) is
+  -- not there in the place of words at the left either: it goes before
+  -- why Enter does no more than it does is said in short.
+  while not left_fits() do
+    local spare
+    for _, part in ipairs(rights) do
+      if not part.gone and not part.keep and part.drop <= 1 then
+        spare = part
+      end
+    end
+    if not spare then
+      break
+    end
+    spare.gone = true
+    right_w = span(rights)
+  end
+  reduce(lefts, left_fits)
 
   local out = { ' ' }
   local function say(parts)
@@ -1828,7 +1856,9 @@ update_bar = function()
   -- on every row: the keys at the right do not move as the cursor does.
   local open_key, read_key, archive_key = keys.key('open'), keys.key('read'), keys.key('archive')
   local least = open_key and (text.width(open_key) + 7) or 0
-  -- And what the two keys every chat has take, at the right.
+  -- And what the two keys every chat has take, at the right. (The key
+  -- that pins a chat is on every chat as well, and has no room kept for
+  -- it: it is there only where there is room to spare.)
   local reserve = (read_key and (text.width(read_key) + 13) or 0)
     + (archive_key and (text.width(archive_key) + 8) or 0)
     + ((read_key and archive_key) and 2 or 0)

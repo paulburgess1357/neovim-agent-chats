@@ -723,8 +723,18 @@ function M.pin(chat)
   if is_part(chat, 'pinned', 'pin') or is_unnamed(chat) then
     return
   end
-  state.toggle_pin(chat.key)
+  local pinned = state.toggle_pin(chat.key)
+  -- On the list the row is seen to go to the top of its group, with its
+  -- star; anywhere else (a conversation) nothing would show that the key
+  -- did something.
+  local seen = board().on_list()
   changed()
+  if not seen then
+    info(
+      pinned and 'Pinned: it is at the top of its group in the list.'
+        or 'Unpinned: it is among the others of its group again.'
+    )
+  end
 end
 
 function M.archive(chat)

@@ -70,6 +70,7 @@ local function guide(width)
     { 'search', 'Search: every chat, inside the conversations too' },
     { 'refresh', 'Refresh: look for changes now (the list also does so by itself)' },
     { 'archive', 'Archive: put a chat away, at the end of the list (again takes it out)' },
+    { 'pin', 'Pin: keep a chat at the top of its group (again lets it go)' },
     { 'notify', 'Notifications: on or off' },
     { 'back', 'Back: out of a conversation, a search, the board' },
     { 'menu', 'Menu: everything else, for this chat and for the board' },

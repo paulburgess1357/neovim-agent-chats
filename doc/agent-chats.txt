@@ -83,10 +83,13 @@ those of the row ("C Conversation", "A Archive"), then those of the list
 cursor moves, and last the way to the menu. "C Conversation" is there for
 every chat, also for one that <CR> can do no more than read. "I Info" is there
 for a chat whose terminal is in the pane, and only while nothing has to make
-room for it. Where there is room, the bar says behind <CR> why it only reads a
+room for it. "P Pin" is there while there is room to spare (on a pinned chat
+too, where it lets the chat go: the star on the row says which it is); the
+key works on any list, and the menu names it. Where
+there is room, the bar says behind <CR> why it only reads a
 chat ("it runs outside this Neovim", "its folder is gone"; with less room
 "runs elsewhere", "folder gone"). On a narrow list the keys give way one by
-one: "I Info" before any other, then "R Refresh", then
+one: "P Pin" before any other, then "I Info", then "R Refresh", then
 "A Archive" and "C Conversation" (they are in the menu), then the search and
 the new chat; what <CR> does and the menu stay the longest. With the cursor in
 the pane (a chat, a conversation) the bar names the keys of that view instead,
@@ -135,6 +138,8 @@ heading and `G` on the last row.
                 itself)
     A           Archive the chat: it goes under "Archived", at the very end
                 of the list. On an archived chat: take it out again
+    P           Pin the chat: it stays at the top of its group, with a star
+                on its row. On a pinned chat: let it go again
     I           Info: the summary of a chat in the pane, in place of its
                 live terminal. Again, or on another row: the terminal
     ?  or  g?   The menu: everything else, for this row and for the board
@@ -158,8 +163,8 @@ until you give it one in `keys`:
 
     For the chat            queue (a reply for when it finishes its turn),
                             diff
-    To keep track of it     rename, pin, move (into a group of your own, or
-                            out of it), label, note, unread, yank
+    To keep track of it     rename, move (into a group of your own, or out
+                            of it), label, note, unread, yank
     For the list            group, show_all, read_all
     For the board           pane, hooks, notify
 
@@ -694,13 +699,13 @@ Pass any of these to `setup()`; the values shown are the defaults.
         open = { '<CR>', '<2-LeftMouse>' },
         read = 'C', new = '+',
         search = { 'S', '/' },
-        refresh = 'R', archive = 'A', info = 'I',
+        refresh = 'R', archive = 'A', pin = 'P', info = 'I',
         menu = { '?', 'g?', '<RightMouse>' },
         back = 'q', clear = '<Esc>', toggle = '<Tab>',
         next_prompt = { ']]', 'J' }, prev_prompt = { '[[', 'K' },
         -- No key by default; in the menu (all but the two that scroll).
         queue = false, move = false, notify = false,
-        diff = false, rename = false, pin = false, label = false, note = false,
+        diff = false, rename = false, label = false, note = false,
         unread = false, yank = false, group = false,
         pane = false, show_all = false, read_all = false,
         scroll_down = false, scroll_up = false, hooks = false,

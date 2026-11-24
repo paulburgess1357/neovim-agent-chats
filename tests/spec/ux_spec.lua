@@ -80,6 +80,9 @@ local ALWAYS = ' | + New Chat  S Search  ? Menu '
 local ALL = ' | + New Chat  S Search  R Refresh  ? Menu '
 local ROW = ' | C Conversation  A Archive  + New Chat  S Search  ? Menu '
 local ROW_ALL = ' | C Conversation  A Archive  + New Chat  S Search  R Refresh  ? Menu '
+-- And with the key that pins a chat, which is there while there is room to
+-- spare: of all the keys the first to give way.
+local ROW_PIN = ' | C Conversation  A Archive  P Pin  + New Chat  S Search  ? Menu '
 -- And on a chat whose terminal is in the pane: its summary can be had there.
 local ROW_OPEN = ' | C Conversation  A Archive  I Info  + New Chat  S Search  ? Menu '
 
@@ -174,7 +177,7 @@ describe('keys: yours are left alone', function()
     local home, c = open(function(h)
       return chat(h)
     end)
-    local theirs = vim.split('H L G N F Q P M n b e w j k h l a d f i o p r s t u v x y', ' ')
+    local theirs = vim.split('H L G N F Q M n b e w j k h l a d f i o p r s t u v x y', ' ')
     local function untouched(where)
       for _, lhs in ipairs(theirs) do
         eq('', vim.fn.maparg(lhs, 'n'), ('%s is mapped %s'):format(lhs, where))
@@ -457,7 +460,7 @@ describe('the bar above the list', function()
 
     -- An ended chat: Enter resumes it, and what is said to it is typed there.
     -- (At the right, the keys that are there on every row.)
-    eq(' Enter Resume' .. ROW, on(key(c)))
+    eq(' Enter Resume' .. ROW_PIN, on(key(c)))
     -- One whose folder is gone can only be read. (The key for the
     -- conversation is named all the same: it is where it is on every chat.
     -- Why Enter only reads it is said where there is room: see below.)
@@ -561,8 +564,10 @@ describe('the bar above the list', function()
     end
     local c, other = key(made.c), key(made.other)
     -- Only a chat whose terminal is in the pane has it.
+    -- (Where it is not, what room there is goes to the key that pins: of
+    -- the two it is the one that gives way.)
     eq(' Enter Open' .. ROW_OPEN, at(80, c))
-    eq(' Enter Resume' .. ROW, at(80, other))
+    eq(' Enter Resume' .. ROW_PIN, at(80, other))
     -- With less room it is the first to go: every other key is where it
     -- is on any row, as the cursor goes from one to the next.
     eq(' Enter Open' .. ROW, at(76, c))
@@ -2269,12 +2274,12 @@ describe('the menu: its own keys, and where it is opened from', function()
     end)
     actions().read(store().get(key(c)))
     -- What has a key on the list has it here.
-    for _, lhs in ipairs({ '+', 'S', 'q', '?' }) do
+    for _, lhs in ipairs({ '+', 'S', 'P', 'q', '?' }) do
       eq(1, vim.fn.maparg(lhs, 'n', false, true).buffer, lhs)
     end
     -- No key replies or forks here either, and what has no key on the
     -- list has none here.
-    for _, lhs in ipairs({ 'R', 'F', 'Q', 'P', 'M' }) do
+    for _, lhs in ipairs({ 'R', 'F', 'Q', 'M' }) do
       eq('', vim.fn.maparg(lhs, 'n'), lhs)
     end
     feed('?')
@@ -2923,7 +2928,7 @@ describe('the summary, when the cursor ends up in it', function()
     eq(S.win, api.nvim_get_current_win())
     ok(board().is_open(), 'back is one step: to the list, not out of the board')
     vim.wait(30)
-    eq(' Enter Resume' .. ROW, bar())
+    eq(' Enter Resume' .. ROW_PIN, bar())
   end)
 
   it('leaves the key to you there too, and then names the command', function()
@@ -3163,11 +3168,11 @@ describe('the summary, with the cursor in it: the keys of the list', function()
     local S = board()._state
     vim.cmd('wincmd l')
     eq(S.pane_win, api.nvim_get_current_win())
-    for _, lhs in ipairs({ '<CR>', 'Q', 'C', '+', 'S', '?', 'q' }) do
+    for _, lhs in ipairs({ '<CR>', 'Q', 'C', 'P', '+', 'S', '?', 'q' }) do
       eq(1, vim.fn.maparg(lhs, 'n', false, true).buffer, lhs)
     end
     -- What has no key on the list has none here.
-    for _, lhs in ipairs({ 'P', 'M' }) do
+    for _, lhs in ipairs({ 'D', 'M' }) do
       no(vim.fn.maparg(lhs, 'n', false, true).buffer == 1, lhs)
     end
     -- No lowercase key, and no click: a text is still a text.
@@ -3660,5 +3665,138 @@ describe('the board as it opens, while the index is still being read', function(
     chat(home, { title = 'Zero, newer', age = 10 })
     store().refresh_sync()
     eq('Two', S.rows[api.nvim_win_get_cursor(S.win)[1]].chat.title)
+  end)
+end)
+
+describe('the key that pins a chat', function()
+  local function two()
+    return open(function(h)
+      return {
+        older = chat(h, { title = 'An older chat', age = 900 }),
+        newer = chat(h, { title = 'A newer chat', age = 300 }),
+      }
+    end)
+  end
+
+  --- Whether the row of `first` is above that of `second` in the list.
+  local function above(first, second)
+    local text = list()
+    return text:find(first, 1, true) < text:find(second, 1, true)
+  end
+
+  it('pins the chat under the cursor, and pressed again lets it go', function()
+    local _, made = two()
+    local star = require('agent-chats.config').get().icons.pin
+    ok(above('A newer chat', 'An older chat'))
+    board().goto_chat(key(made.older))
+    has(bar(), 'A Archive  P Pin  + New Chat')
+    feed('P')
+    ok(state().pinned(key(made.older)))
+    -- At the top of its group, with its star; the cursor has gone with it.
+    has(list(), star .. ' An older chat')
+    ok(above('An older chat', 'A newer chat'))
+    eq(key(made.older), board().current().key)
+    -- The key goes by one name both ways: it stays where it is as it is
+    -- pressed, and the star says which way it is.
+    has(bar(), 'A Archive  P Pin  + New Chat')
+    feed('P')
+    no(state().pinned(key(made.older)))
+    hasnt(list(), star)
+    ok(above('A newer chat', 'An older chat'))
+    has(bar(), 'P Pin')
+    -- The menu has the same line as before, now with its key, and the key
+    -- picks it there.
+    feed('?')
+    has(table.concat(menu().lines(), '\n'), 'P      Pin to the top of its group')
+    feed('P')
+    no(menu().is_open())
+    ok(state().pinned(key(made.older)))
+    feed('?')
+    has(table.concat(menu().lines(), '\n'), 'P      Unpin')
+    menu().close()
+  end)
+
+  it(
+    'is the first key of the bar to give way, and is never there in the place of another',
+    function()
+      local _, made = two()
+      local win = board()._state.win
+      local function at(width)
+        api.nvim_win_set_width(win, width)
+        board().goto_chat(key(made.older))
+        board().render()
+        return bar()
+      end
+      eq(
+        ' Enter Resume | C Conversation  A Archive  P Pin  + New Chat  S Search  R Refresh  ? Menu ',
+        at(100)
+      )
+      -- Where both do not fit, the key that looks for changes now is the one
+      -- that has its room kept: on any row, wide enough or not for this one.
+      eq(' Enter Resume' .. ROW_ALL, at(84))
+      eq(' Enter Resume' .. ROW_PIN, at(80))
+      eq(' Enter Resume' .. ROW, at(76))
+      -- It works where it is not named.
+      feed('P')
+      ok(state().pinned(key(made.older)))
+    end
+  )
+
+  it('is left to you where P is a key of your own: pinning is in the menu', function()
+    local pressed = 0
+    user_map('n', 'P', function()
+      pressed = pressed + 1
+    end, { desc = 'my own P' })
+    local _, made = two()
+    board().goto_chat(key(made.older))
+    no(vim.fn.maparg('P', 'n', false, true).buffer == 1, 'the board did not take the key')
+    eq(nil, keys().key('pin'))
+    hasnt(bar(), 'Pin')
+    feed('P')
+    eq(1, pressed, 'your mapping ran')
+    no(state().pinned(key(made.older)))
+    -- One step away, as it was before it had a key.
+    feed('?')
+    has(table.concat(menu().lines(), '\n'), 'Pin to the top of its group')
+    menu().close()
+    board().run('pin')
+    ok(state().pinned(key(made.older)))
+  end)
+
+  it('says what it did from a conversation, and is no key of a chat’s terminal', function()
+    local home, made = two()
+    local c = made.older
+    local buf = actions().read(store().get(key(c)))
+    eq(buf, api.nvim_get_current_buf())
+    -- Its row is not what is being looked at: the key says what it did.
+    has(
+      notes(function()
+        feed('P')
+      end),
+      'Pinned: it is at the top of its group in the list.'
+    )
+    ok(state().pinned(key(c)))
+    has(
+      notes(function()
+        feed('P')
+      end),
+      'Unpinned: it is among the others of its group again.'
+    )
+    no(state().pinned(key(c)))
+    feed('q')
+    -- On the list the row says it: nothing else is said.
+    board().goto_chat(key(c))
+    eq(
+      '',
+      notes(function()
+        feed('P')
+      end)
+    )
+    ok(state().pinned(key(c)))
+    -- In a chat's terminal every key but the one that goes back is what it
+    -- is in any terminal: there `P` puts text into what the agent reads.
+    local _, term = hosted(home, c)
+    eq(term, api.nvim_get_current_buf())
+    eq('', vim.fn.maparg('P', 'n'), 'P is mapped in a chat’s terminal')
   end)
 end)

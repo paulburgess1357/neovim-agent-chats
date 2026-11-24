@@ -48,7 +48,7 @@ require('agent-chats').setup({
   filter_out = { 'scratch' }, -- folders whose chats are kept out of the way (see below)
   board = { layout = 'float' }, -- 'tab' (the default), 'float' or 'current'
   notify = { enabled = false }, -- no notifications
-  keys = { pin = 'P' }, -- give something in the menu a key of its own
+  keys = { diff = 'D' }, -- give something in the menu a key of its own
 })
 ```
 
@@ -75,7 +75,7 @@ You do not have to learn any keys. The bar above the list names them: what `Ente
 `?` opens the menu (`g?` if `?` is a key of your own; the bar says which). It lists everything that can be done, in words, and a line that has a key shows it, so the keys are picked up as you go. Choose a line with `Enter` or a click.
 
 - **This chat.** Go into it, read the whole conversation, see its summary in place of its terminal, queue a reply to be sent when the agent finishes its turn, see what changed in its folder.
-- **Keep track of it.** Rename it, pin it to the top of its group, put it in a group of your own, give it labels or a note (the note is shown on its row), mark it read or unread, archive it, copy the command that resumes it.
+- **Keep track of it.** Rename it, pin it to the top of its group (`P`), put it in a group of your own, give it labels or a note (the note is shown on its row), mark it read or unread, archive it, copy the command that resumes it.
 - **The list.** Start a new chat, search every chat (inside the conversations too), group the list by folder, agent or worktree, show older chats, mark everything read.
 - **The board.** Hide the pane, refresh, see or set up the status hooks, switch notifications off and on, close the board.
 
