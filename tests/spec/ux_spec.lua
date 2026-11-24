@@ -2936,7 +2936,7 @@ describe('the summary, when the cursor ends up in it', function()
     api.nvim_win_set_width(board()._state.win, 100)
     board().summary_entered()
     eq(
-      ' Enter Resume | C Conversation  A Archive  :Chats Back  + New Chat  S Search  R Refresh  ? Menu ',
+      ' Enter Resume | C Conversation  A Archive  :Chats open Back  + New Chat  S Search  R Refresh  ? Menu ',
       bar()
     )
   end)

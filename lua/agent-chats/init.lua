@@ -1,7 +1,7 @@
 -- Neovim Agent Chats: see and manage every AI agent chat on this machine.
 --
 --   require('agent-chats').setup({ ... })   -- optional; the defaults work
---   :Chats                                  -- open the board
+--   :Chats                                  -- open the board (again: close it)
 --
 -- Nothing below loads until it is used: `setup` only stores options and,
 -- a moment after startup, starts the background watcher that drives
@@ -62,7 +62,8 @@ function M.setup(opts)
   end
 end
 
---- Open the board (or go to it).
+--- Open the board, or go to it: to its list, wherever the cursor is, the
+--- board itself included. (It never closes it: `toggle` does.)
 ---@param opts { layout: string?, group_by: string?, search: string? }?
 function M.open(opts)
   wire()
@@ -73,7 +74,10 @@ function M.close()
   require('agent-chats.ui.board').close()
 end
 
---- Open the board; close it when the cursor is already in it.
+--- What `:Chats` does: open the board; go to it when it is open somewhere
+--- else (another tab, another window); close it when it is what you are
+--- looking at (the cursor is in it, or in the tab that is its own).
+---@param opts { layout: string?, group_by: string?, search: string? }?
 function M.toggle(opts)
   wire()
   require('agent-chats.ui.board').toggle(opts)
@@ -278,7 +282,9 @@ local HOOK_ACTIONS = { 'install', 'uninstall', 'show', 'status' }
 --- Run `:Chats <args>`.
 function M.command(opts)
   local args = vim.split(vim.trim(opts.args or ''), '%s+', { trimempty = true })
-  local sub = table.remove(args, 1) or 'open'
+  -- Alone, it is the one command for the board, both ways: it opens the
+  -- board or goes to it, and closes it when it is in front of you.
+  local sub = table.remove(args, 1) or 'toggle'
   local fn = SUBCOMMANDS[sub]
   if not fn then
     vim.notify(

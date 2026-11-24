@@ -19,7 +19,7 @@ local function define(name)
   end, {
     nargs = '*',
     range = true,
-    desc = 'Agent chats: open the board, or run a subcommand',
+    desc = 'Agent chats: open the board (close it when it is in front of you), or run a subcommand',
     complete = function(lead, line)
       return require('agent-chats').complete(lead, line)
     end,

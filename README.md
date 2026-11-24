@@ -33,7 +33,7 @@ With lazy.nvim:
 
 ## Set up
 
-**1. Open it.** `:Chats` opens the board. Nothing is mapped globally, so give it a key if you like:
+**1. Open it.** `:Chats` opens the board, and `:Chats` again on the board closes it. From another tab it takes you to the board. Nothing is mapped globally, so give it a key if you like:
 
 ```lua
 vim.keymap.set('n', '<leader>ac', '<Plug>(agent-chats)')
@@ -115,7 +115,7 @@ require('agent-chats').setup({ hide_subagents = true })
 
 | Command | Action |
 | --- | --- |
-| `:Chats` | Open the board, or go to it |
+| `:Chats` | Open the board, or go to it; close it when you are already looking at it |
 | `:Chats new [agent]` | Start a new chat |
 | `:Chats next` | Go into the next chat that needs you, or the next unread one |
 | `:Chats search [text]` | Search every chat |

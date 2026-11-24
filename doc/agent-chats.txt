@@ -55,7 +55,8 @@ a guess.
 THE BOARD                                                  *agent-chats-board*
 
 |:Chats| opens the board in its own tab: the list on the left, a pane on the
-right. Asked for again from anywhere, it comes to the front, and `q` on it
+right. Asked for again from somewhere else (another tab), it comes to the
+front; asked for again while you are looking at it, it closes. `q` on it
 leads back to where it was last asked for. The pane follows the cursor. For a
 chat running in a terminal of this Neovim it shows that live terminal; for any
 other chat it shows a summary: what state it is in and what it wants from you,
@@ -497,7 +498,12 @@ just been started).
 COMMANDS                                                *agent-chats-commands*
 
                                                            *:Chats* *:AgentChats*
-:Chats                  Open the board, or go to it.
+:Chats                  Open the board. When it is open somewhere else (in
+                        another tab, say), go to it; when it is what you are
+                        looking at, close it. That is: the cursor is in its
+                        list or its pane, or anywhere in the board's own tab.
+:Chats open             Open the board, or go to its list, from wherever the
+                        cursor is: this one never closes it.
 :Chats new [agent]      Start a new chat.
 :Chats next             Go into the next chat that wants you, as <CR> would:
                         one that needs an answer first, else an unread one,
@@ -524,8 +530,7 @@ COMMANDS                                                *agent-chats-commands*
 :Chats hooks status     One line per agent.
 :Chats refresh          Look for changes now.
 :Chats close            Close the board.
-:Chats toggle           Open the board; close it when the cursor is in its
-                        list.
+:Chats toggle           The same as `:Chats` with nothing after it.
 :Chats health           Run `:checkhealth agent-chats`.
 
 `:AgentChats` is the same command under a second name. Where another plugin
@@ -753,9 +758,10 @@ itself is `icons.shown`, and '' leaves it out.
 LUA API                                                      *agent-chats-api*
 
     require('agent-chats').setup({opts})
-    require('agent-chats').open({opts})     -- { layout, group_by, search }
+    require('agent-chats').open({opts})     -- { layout, group_by, search };
+                                            -- never closes the board
     require('agent-chats').close()
-    require('agent-chats').toggle()
+    require('agent-chats').toggle()         -- what the bare command does
     require('agent-chats').new({opts})      -- { provider, cwd, prompt }
     require('agent-chats').next()
     require('agent-chats').search({text})

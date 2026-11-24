@@ -1852,9 +1852,10 @@ update_bar = function()
       if S.pane_mode == 'preview' and api.nvim_get_current_win() == S.pane_win and not S.intro then
         -- In the summary the keys are the list's, but for the one that
         -- goes back: there it leads to the list. (With no key of its own
-        -- there, the command is the way.)
+        -- there, the command is the way: the one that opens the board,
+        -- since the bare command closes a board that is in front of you.)
         local buf = api.nvim_win_get_buf(S.pane_win)
-        local back = config.command()
+        local back = config.command('open')
         for _, lhs in ipairs(keys.wanted('back')) do
           if keys.is_ours(buf, 'n', lhs) then
             back = keys.name(lhs)
@@ -2448,6 +2449,25 @@ end
 function M.has_focus()
   local win = api.nvim_get_current_win()
   return M.is_open() and (win == S.win or win == S.pane_win)
+end
+
+--- Whether the board is what you are looking at: the cursor is in its list
+--- or its pane, or anywhere in the tab that is the board's own. A floating
+--- board is, whenever it is open: it goes when the cursor leaves it for a
+--- window behind it. (Asked for where this holds, the board closes; asked
+--- for from anywhere else, it comes to the front: see `M.toggle`.)
+---@return boolean
+function M.in_front()
+  if not M.is_open() then
+    return false
+  end
+  if S.layout == 'float' or M.has_focus() then
+    return true
+  end
+  return S.layout == 'tab'
+    and S.tab ~= nil
+    and api.nvim_tabpage_is_valid(S.tab)
+    and api.nvim_get_current_tabpage() == S.tab
 end
 
 --- Put the cursor back in the list.
@@ -3922,8 +3942,12 @@ function M.open(opts)
   end
 end
 
+--- What the bare command does: open the board; go to it when it is open
+--- somewhere else (in another tab, in another window); close it when it is
+--- what you are looking at.
+---@param opts { layout: string?, group_by: string?, search: string? }?
 function M.toggle(opts)
-  if M.is_open() and api.nvim_get_current_win() == S.win then
+  if M.in_front() then
     M.close()
   else
     M.open(opts)
